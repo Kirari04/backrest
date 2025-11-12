@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"runtime"
 	"slices"
 	"strings"
@@ -485,6 +486,50 @@ func (r *Repo) GenericCommand(ctx context.Context, args []string, opts ...Generi
 	if err := cmd.Run(); err != nil {
 		return err
 	}
+	return nil
+}
+
+func (r *Repo) AddSFTPHostKey(host string) error {
+	if host == "" {
+		return nil
+	}
+
+	knownHostsPath := path.Join(os.Getenv("HOME"), ".ssh", "known_hosts")
+	cmd := exec.Command("ssh-keyscan", "-H", host)
+	key, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("failed to run ssh-keyscan: %w", err)
+	}
+
+	f, err := os.OpenFile(knownHostsPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open known_hosts file: %w", err)
+	}
+	defer f.Close()
+
+	if _, err := f.Write(key); err != nil {
+		return fmt.Errorf("failed to write to known_hosts file: %w", err)
+	}
+
+	return nil
+}
+
+func (r *Repo) EnsureSFTPIdentityFile(sshDir string) error {
+	if _, err := os.Stat(sshDir); os.IsNotExist(err) {
+		if err := os.MkdirAll(sshDir, 0700); err != nil {
+			return fmt.Errorf("failed to create .ssh directory: %w", err)
+		}
+	}
+
+	keyPath := path.Join(sshDir, "id_rsa")
+	if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+		cmd := exec.Command("ssh-keygen", "-t", "rsa", "-b", "4096", "-f", keyPath, "-N", "")
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to generate ssh key: %w", err)
+		}
+	}
+
+	r.opts = append(r.opts, WithFlags("-o", fmt.Sprintf("sftp.args=-i %s", keyPath)))
 	return nil
 }
 

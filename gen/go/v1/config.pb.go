@@ -634,24 +634,21 @@ func (x *Multihost) GetAuthorizedClients() []*Multihost_Peer {
 }
 
 type Repo struct {
-	state                   protoimpl.MessageState `protogen:"open.v1"`
-	Id                      string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`                                                                                    // unique but human readable ID for this repo.
-	Uri                     string                 `protobuf:"bytes,2,opt,name=uri,proto3" json:"uri,omitempty"`                                                                                  // URI of the repo.
-	Guid                    string                 `protobuf:"bytes,11,opt,name=guid,proto3" json:"guid,omitempty"`                                                                               // a globally unique ID for this repo. Should be derived as the 'id' field in `restic cat config --json`.
-	Password                string                 `protobuf:"bytes,3,opt,name=password,proto3" json:"password,omitempty"`                                                                        // plaintext password
-	Env                     []string               `protobuf:"bytes,4,rep,name=env,proto3" json:"env,omitempty"`                                                                                  // extra environment variables to set for restic.
-	Flags                   []string               `protobuf:"bytes,5,rep,name=flags,proto3" json:"flags,omitempty"`                                                                              // extra flags set on the restic command.
-	PrunePolicy             *PrunePolicy           `protobuf:"bytes,6,opt,name=prune_policy,json=prunePolicy,proto3" json:"prune_policy,omitempty"`                                               // policy for when to run prune.
-	CheckPolicy             *CheckPolicy           `protobuf:"bytes,9,opt,name=check_policy,json=checkPolicy,proto3" json:"check_policy,omitempty"`                                               // policy for when to run check.
-	Hooks                   []*Hook                `protobuf:"bytes,7,rep,name=hooks,proto3" json:"hooks,omitempty"`                                                                              // hooks to run on events for this repo.
-	AutoUnlock              bool                   `protobuf:"varint,8,opt,name=auto_unlock,json=autoUnlock,proto3" json:"auto_unlock,omitempty"`                                                 // automatically unlock the repo when needed.
-	AutoInitialize          bool                   `protobuf:"varint,12,opt,name=auto_initialize,json=autoInitialize,proto3" json:"auto_initialize,omitempty"`                                    // whether the repo should be auto-initialized if not found.
-	CommandPrefix           *CommandPrefix         `protobuf:"bytes,10,opt,name=command_prefix,json=commandPrefix,proto3" json:"command_prefix,omitempty"`                                        // modifiers for the restic commands
-	SftpAutoAddToKnownHosts bool                   `protobuf:"varint,13,opt,name=sftp_auto_add_to_known_hosts,json=sftpAutoAddToKnownHosts,proto3" json:"sftp_auto_add_to_known_hosts,omitempty"` // automatically add new SFTP hosts to known_hosts.
-	SftpIdentityFile        string                 `protobuf:"bytes,14,opt,name=sftp_identity_file,json=sftpIdentityFile,proto3" json:"sftp_identity_file,omitempty"`                             // Filename of the SSH identity key in the .ssh directory.
-	SftpPort                uint32                 `protobuf:"varint,15,opt,name=sftp_port,json=sftpPort,proto3" json:"sftp_port,omitempty"`                                                      // Custom SFTP port. Defaults to 22 if not set.
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Id             string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`                                                 // unique but human readable ID for this repo.
+	Uri            string                 `protobuf:"bytes,2,opt,name=uri,proto3" json:"uri,omitempty"`                                               // URI of the repo.
+	Guid           string                 `protobuf:"bytes,11,opt,name=guid,proto3" json:"guid,omitempty"`                                            // a globally unique ID for this repo. Should be derived as the 'id' field in `restic cat config --json`.
+	Password       string                 `protobuf:"bytes,3,opt,name=password,proto3" json:"password,omitempty"`                                     // plaintext password
+	Env            []string               `protobuf:"bytes,4,rep,name=env,proto3" json:"env,omitempty"`                                               // extra environment variables to set for restic.
+	Flags          []string               `protobuf:"bytes,5,rep,name=flags,proto3" json:"flags,omitempty"`                                           // extra flags set on the restic command.
+	PrunePolicy    *PrunePolicy           `protobuf:"bytes,6,opt,name=prune_policy,json=prunePolicy,proto3" json:"prune_policy,omitempty"`            // policy for when to run prune.
+	CheckPolicy    *CheckPolicy           `protobuf:"bytes,9,opt,name=check_policy,json=checkPolicy,proto3" json:"check_policy,omitempty"`            // policy for when to run check.
+	Hooks          []*Hook                `protobuf:"bytes,7,rep,name=hooks,proto3" json:"hooks,omitempty"`                                           // hooks to run on events for this repo.
+	AutoUnlock     bool                   `protobuf:"varint,8,opt,name=auto_unlock,json=autoUnlock,proto3" json:"auto_unlock,omitempty"`              // automatically unlock the repo when needed.
+	AutoInitialize bool                   `protobuf:"varint,12,opt,name=auto_initialize,json=autoInitialize,proto3" json:"auto_initialize,omitempty"` // whether the repo should be auto-initialized if not found.
+	CommandPrefix  *CommandPrefix         `protobuf:"bytes,10,opt,name=command_prefix,json=commandPrefix,proto3" json:"command_prefix,omitempty"`     // modifiers for the restic commands
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *Repo) Reset() {
@@ -766,27 +763,6 @@ func (x *Repo) GetCommandPrefix() *CommandPrefix {
 		return x.CommandPrefix
 	}
 	return nil
-}
-
-func (x *Repo) GetSftpAutoAddToKnownHosts() bool {
-	if x != nil {
-		return x.SftpAutoAddToKnownHosts
-	}
-	return false
-}
-
-func (x *Repo) GetSftpIdentityFile() string {
-	if x != nil {
-		return x.SftpIdentityFile
-	}
-	return ""
-}
-
-func (x *Repo) GetSftpPort() uint32 {
-	if x != nil {
-		return x.SftpPort
-	}
-	return 0
 }
 
 type Plan struct {
@@ -2325,7 +2301,7 @@ const file_v1_config_proto_rawDesc = "" +
 	"\x12PERMISSION_UNKNOWN\x10\x00\x12\x1e\n" +
 	"\x1aPERMISSION_READ_OPERATIONS\x10\x01\x12\x1a\n" +
 	"\x16PERMISSION_READ_CONFIG\x10\x02\x12 \n" +
-	"\x1cPERMISSION_READ_WRITE_CONFIG\x10\x03\"\x96\x04\n" +
+	"\x1cPERMISSION_READ_WRITE_CONFIG\x10\x03\"\x8c\x03\n" +
 	"\x04Repo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x10\n" +
 	"\x03uri\x18\x02 \x01(\tR\x03uri\x12\x12\n" +
@@ -2340,10 +2316,7 @@ const file_v1_config_proto_rawDesc = "" +
 	"autoUnlock\x12'\n" +
 	"\x0fauto_initialize\x18\f \x01(\bR\x0eautoInitialize\x128\n" +
 	"\x0ecommand_prefix\x18\n" +
-	" \x01(\v2\x11.v1.CommandPrefixR\rcommandPrefix\x12=\n" +
-	"\x1csftp_auto_add_to_known_hosts\x18\r \x01(\bR\x17sftpAutoAddToKnownHosts\x12,\n" +
-	"\x12sftp_identity_file\x18\x0e \x01(\tR\x10sftpIdentityFile\x12\x1b\n" +
-	"\tsftp_port\x18\x0f \x01(\rR\bsftpPort\"\xd9\x02\n" +
+	" \x01(\v2\x11.v1.CommandPrefixR\rcommandPrefix\"\xd9\x02\n" +
 	"\x04Plan\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04repo\x18\x02 \x01(\tR\x04repo\x12\x14\n" +
