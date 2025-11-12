@@ -100,11 +100,15 @@ export const AddRepoModal = ({ template }: { template: Repo | null }) => {
         (f: string) => f && f.startsWith("--option=sftp.args")
       );
       if (sftpArgsFlag) {
-        const matchI = sftpArgsFlag.match(/-i\s+([^\s']+)/);
+        const argsMatch = sftpArgsFlag.match(/^--option=sftp\.args='(.*)'$/);
+        const sftpArgs = argsMatch ? argsMatch[1] : "";
+
+        const matchI = sftpArgs.match(/-i\s+((?:"[^"]+")|(?:'[^']+')|(?:[^\s]+))/);
         if (matchI && matchI[1]) {
-          setSftpIdentityFile(matchI[1]);
+          // Strip quotes from path
+          setSftpIdentityFile(matchI[1].replace(/^["']|["']$/g, ""));
         }
-        const matchP = sftpArgsFlag.match(/-p\s+([0-9]+)/);
+        const matchP = sftpArgs.match(/-p\s+([0-9]+)/);
         if (matchP && matchP[1]) {
           setSftpPort(parseInt(matchP[1], 10));
         }
