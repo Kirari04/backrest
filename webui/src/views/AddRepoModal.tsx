@@ -82,6 +82,7 @@ export const AddRepoModal = ({ template }: { template: Repo | null }) => {
   const uri = Form.useWatch("uri", form);
   const [sftpIdentityFile, setSftpIdentityFile] = useState("");
   const [sftpPort, setSftpPort] = useState<number | null>(null);
+  const [modal, contextHolder] = Modal.useModal();
 
   useEffect(() => {
     const initVal = template
@@ -172,40 +173,82 @@ export const AddRepoModal = ({ template }: { template: Repo | null }) => {
     }
   };
 
+  const verifySftpHostKey = async (
+    action: (trust: boolean) => Promise<any>
+  ) => {
+    try {
+      await action(false);
+    } catch (e: any) {
+      if (
+        e.message &&
+        e.message.includes("SFTP host key verification failed")
+      ) {
+        modal.confirm({
+          title: "Unknown SFTP Host Key",
+          content: (
+            <>
+              The host key for this SFTP server is not known.
+              <br />
+              Do you want to trust this host and add its key to your known_hosts
+              file?
+            </>
+          ),
+          onOk: async () => {
+            try {
+              await action(true);
+            } catch (retryErr: any) {
+              alertsApi.error(
+                formatErrorAlert(retryErr, "Operation error: "),
+                10
+              );
+            }
+          },
+        });
+      } else {
+        throw e;
+      }
+    }
+  };
+
   const handleOk = async () => {
     setConfirmLoading(true);
 
     try {
       let repoFormData = await validateForm(form);
-      const repo = fromJson(RepoSchema, repoFormData, {
-        ignoreUnknownFields: false,
-      });
+      const doSubmit = async (trust: boolean) => {
+        const repo = fromJson(RepoSchema, repoFormData, {
+          ignoreUnknownFields: false,
+        });
+        repo.trustSftpHostKey = trust;
 
-      if (template !== null) {
-        // We are in the update repo flow, update the repo via the service
-        setConfig(await backrestService.addRepo(repo));
-        showModal(null);
-        alertsApi.success("Updated repo configuration " + repo.uri);
-      } else {
-        // We are in the create repo flow, create the new repo via the service
-        setConfig(await backrestService.addRepo(repo));
-        showModal(null);
-        alertsApi.success("Added repo " + repo.uri);
-      }
+        if (template !== null) {
+          // We are in the update repo flow, update the repo via the service
+          setConfig(await backrestService.addRepo(repo));
+          showModal(null);
+          alertsApi.success("Updated repo configuration " + repo.uri);
+        } else {
+          // We are in the create repo flow, create the new repo via the service
+          setConfig(await backrestService.addRepo(repo));
+          showModal(null);
+          alertsApi.success("Added repo " + repo.uri);
+        }
 
-      try {
-        // Update the snapshots for the repo to confirm the config works.
-        // TODO: this operation is only used here, find a different RPC for this purpose.
-        await backrestService.listSnapshots({ repoId: repo.id });
-      } catch (e: any) {
-        alertsApi.error(
-          formatErrorAlert(
-            e,
-            "Failed to list snapshots for updated/added repo: "
-          ),
-          10
-        );
-      }
+        try {
+          // Update the snapshots for the repo to confirm the config works.
+          // TODO: this operation is only used here, find a different RPC for this purpose.
+          await backrestService.listSnapshots({ repoId: repo.id });
+        } catch (e: any) {
+          alertsApi.error(
+            formatErrorAlert(
+              e,
+              "Failed to list snapshots for updated/added repo: "
+            ),
+            10
+          );
+        }
+      };
+
+      await verifySftpHostKey(doSubmit);
     } catch (e: any) {
       alertsApi.error(formatErrorAlert(e, "Operation error: "), 10);
     } finally {
@@ -219,6 +262,7 @@ export const AddRepoModal = ({ template }: { template: Repo | null }) => {
 
   return (
     <>
+      {contextHolder}
       <Modal
         open={true}
         onCancel={handleCancel}
@@ -249,10 +293,11 @@ export const AddRepoModal = ({ template }: { template: Repo | null }) => {
             onClickAsync={async () => {
               let repoFormData = await validateForm(form);
               console.log("checking repo", repoFormData);
-              const repo = fromJson(RepoSchema, repoFormData, {
-                ignoreUnknownFields: false,
-              });
-              try {
+              const doCheck = async (trust: boolean) => {
+                const repo = fromJson(RepoSchema, repoFormData, {
+                  ignoreUnknownFields: false,
+                });
+                repo.trustSftpHostKey = trust;
                 const exists = await backrestService.checkRepoExists(repo);
                 if (exists.value) {
                   alertsApi.success(
@@ -269,6 +314,10 @@ export const AddRepoModal = ({ template }: { template: Repo | null }) => {
                     10
                   );
                 }
+              };
+
+              try {
+                await verifySftpHostKey(doCheck);
               } catch (e: any) {
                 alertsApi.error(formatErrorAlert(e, "Check error: "), 10);
               }

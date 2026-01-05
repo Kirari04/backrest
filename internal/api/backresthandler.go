@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -118,7 +119,7 @@ func (s *BackrestHandler) CheckRepoExists(ctx context.Context, req *connect.Requ
 		req.Msg.Guid = cryptoutil.MustRandomID(cryptoutil.DefaultIDBits)
 	}
 
-	if err := s.addSftpHostKey(req.Msg.GetUri()); err != nil {
+	if err := s.addSftpHostKey(req.Msg, req.Msg.GetTrustSftpHostKey()); err != nil {
 		return nil, fmt.Errorf("failed to add sftp host key: %w", err)
 	}
 
@@ -195,6 +196,10 @@ func (s *BackrestHandler) AddRepo(ctx context.Context, req *connect.Request[v1.R
 	}
 
 	newRepo.Guid = guid
+
+	if err := s.addSftpHostKey(newRepo, newRepo.GetTrustSftpHostKey()); err != nil {
+		return nil, fmt.Errorf("failed to add sftp host key: %w", err)
+	}
 
 	if err := config.ValidateConfig(c); err != nil {
 		return nil, fmt.Errorf("validation error: %w", err)
@@ -276,7 +281,8 @@ func (s *BackrestHandler) RemoveRepo(ctx context.Context, req *connect.Request[t
 
 // addSftpHostKey parses an SFTP URI and adds the host's public key to the user's known_hosts file.
 // This is equivalent to what `ssh-keyscan` does.
-func (s *BackrestHandler) addSftpHostKey(uri string) error {
+func (s *BackrestHandler) addSftpHostKey(repo *v1.Repo, trust bool) error {
+	uri := repo.GetUri()
 	if !strings.HasPrefix(uri, "sftp:") {
 		return nil
 	}
@@ -302,6 +308,21 @@ func (s *BackrestHandler) addSftpHostKey(uri string) error {
 		return errors.New("could not parse host from sftp uri")
 	}
 
+	// Extract port from flags if possible
+	var port string
+	// Check for port in sftp.args
+	// e.g. --option=sftp.args='-oBatchMode=yes -p 23'
+	re := regexp.MustCompile(`(?:^|\s)-[pP]\s*(\d+)`)
+	for _, flag := range repo.Flags {
+		if strings.HasPrefix(flag, "--option=sftp.args=") {
+			matches := re.FindStringSubmatch(flag)
+			if len(matches) > 1 {
+				port = matches[1]
+				break
+			}
+		}
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("could not get home directory: %w", err)
@@ -312,13 +333,30 @@ func (s *BackrestHandler) addSftpHostKey(uri string) error {
 		return err
 	}
 
-	checkCmd := exec.Command("ssh-keygen", "-F", host)
+	// Construct host spec for ssh-keygen and ssh-keyscan
+	// If port is non-standard, host spec is usually [host]:port
+	hostSpec := host
+	if port != "" && port != "22" {
+		hostSpec = fmt.Sprintf("[%s]:%s", host, port)
+	}
+
+	checkCmd := exec.Command("ssh-keygen", "-F", hostSpec)
 	if err := checkCmd.Run(); err == nil {
-		zap.S().Debugf("SFTP host %s already in known_hosts", host)
+		zap.S().Debugf("SFTP host %s already in known_hosts", hostSpec)
 		return nil
 	}
 
-	keyscanCmd := exec.Command("ssh-keyscan", "-H", host)
+	if !trust {
+		return fmt.Errorf("SFTP host key verification failed: key for host %s is unknown", hostSpec)
+	}
+
+	keyscanArgs := []string{"-H"}
+	if port != "" {
+		keyscanArgs = append(keyscanArgs, "-p", port)
+	}
+	keyscanArgs = append(keyscanArgs, host)
+
+	keyscanCmd := exec.Command("ssh-keyscan", keyscanArgs...)
 	keyOutput, err := keyscanCmd.Output()
 	if err != nil {
 		return fmt.Errorf("ssh-keyscan for host %s failed: %w", host, err)
@@ -334,7 +372,7 @@ func (s *BackrestHandler) addSftpHostKey(uri string) error {
 		return fmt.Errorf("failed to write to known_hosts file: %w", err)
 	}
 
-	zap.S().Infof("Added SFTP host %s to known_hosts file at %s", host, knownHostsPath)
+	zap.S().Infof("Added SFTP host %s to known_hosts file at %s", hostSpec, knownHostsPath)
 	return nil
 }
 
