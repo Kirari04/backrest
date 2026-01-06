@@ -27,6 +27,10 @@ import {
   RepoSchema,
   Schedule_Clock,
 } from "../../gen/ts/v1/config_pb";
+import {
+  AddRepoRequestSchema,
+  CheckRepoExistsRequestSchema,
+} from "../../gen/ts/v1/service_pb";
 import { StringValueSchema } from "../../gen/ts/types/value_pb";
 import { URIAutocomplete } from "../components/URIAutocomplete";
 import { MinusCircleOutlined, PlusOutlined } from "@ant-design/icons";
@@ -219,16 +223,20 @@ export const AddRepoModal = ({ template }: { template: Repo | null }) => {
         const repo = fromJson(RepoSchema, repoFormData, {
           ignoreUnknownFields: false,
         });
-        repo.trustSftpHostKey = trust;
+
+        const req = create(AddRepoRequestSchema, {
+          repo: repo,
+          trustSftpHostKey: trust,
+        });
 
         if (template !== null) {
           // We are in the update repo flow, update the repo via the service
-          setConfig(await backrestService.addRepo(repo));
+          setConfig(await backrestService.addRepo(req));
           showModal(null);
           alertsApi.success("Updated repo configuration " + repo.uri);
         } else {
           // We are in the create repo flow, create the new repo via the service
-          setConfig(await backrestService.addRepo(repo));
+          setConfig(await backrestService.addRepo(req));
           showModal(null);
           alertsApi.success("Added repo " + repo.uri);
         }
@@ -297,8 +305,13 @@ export const AddRepoModal = ({ template }: { template: Repo | null }) => {
                 const repo = fromJson(RepoSchema, repoFormData, {
                   ignoreUnknownFields: false,
                 });
-                repo.trustSftpHostKey = trust;
-                const exists = await backrestService.checkRepoExists(repo);
+
+                const req = create(CheckRepoExistsRequestSchema, {
+                  repo: repo,
+                  trustSftpHostKey: trust,
+                });
+
+                const exists = await backrestService.checkRepoExists(req);
                 if (exists.value) {
                   alertsApi.success(
                     "Connected successfully to " +

@@ -102,24 +102,24 @@ func (s *BackrestHandler) SetConfig(ctx context.Context, req *connect.Request[v1
 	return connect.NewResponse(newConfig), nil
 }
 
-func (s *BackrestHandler) CheckRepoExists(ctx context.Context, req *connect.Request[v1.Repo]) (*connect.Response[types.BoolValue], error) {
+func (s *BackrestHandler) CheckRepoExists(ctx context.Context, req *connect.Request[v1.CheckRepoExistsRequest]) (*connect.Response[types.BoolValue], error) {
 	c, err := s.config.Get()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get config: %w", err)
 	}
 
 	c = proto.Clone(c).(*v1.Config)
-	if idx := slices.IndexFunc(c.Repos, func(r *v1.Repo) bool { return r.Id == req.Msg.Id }); idx != -1 {
-		c.Repos[idx] = req.Msg
+	if idx := slices.IndexFunc(c.Repos, func(r *v1.Repo) bool { return r.Id == req.Msg.Repo.Id }); idx != -1 {
+		c.Repos[idx] = req.Msg.Repo
 	} else {
-		c.Repos = append(c.Repos, req.Msg)
+		c.Repos = append(c.Repos, req.Msg.Repo)
 	}
 
-	if req.Msg.Guid == "" {
-		req.Msg.Guid = cryptoutil.MustRandomID(cryptoutil.DefaultIDBits)
+	if req.Msg.Repo.Guid == "" {
+		req.Msg.Repo.Guid = cryptoutil.MustRandomID(cryptoutil.DefaultIDBits)
 	}
 
-	if err := s.addSftpHostKey(req.Msg, req.Msg.GetTrustSftpHostKey()); err != nil {
+	if err := s.addSftpHostKey(req.Msg.Repo, req.Msg.GetTrustSftpHostKey()); err != nil {
 		return nil, fmt.Errorf("failed to add sftp host key: %w", err)
 	}
 
@@ -132,7 +132,7 @@ func (s *BackrestHandler) CheckRepoExists(ctx context.Context, req *connect.Requ
 		return nil, fmt.Errorf("failed to find or install restic binary: %w", err)
 	}
 
-	r, err := repo.NewRepoOrchestrator(c, req.Msg, bin)
+	r, err := repo.NewRepoOrchestrator(c, req.Msg.Repo, bin)
 	if err != nil {
 		return nil, fmt.Errorf("failed to configure repo: %w", err)
 	}
@@ -141,9 +141,9 @@ func (s *BackrestHandler) CheckRepoExists(ctx context.Context, req *connect.Requ
 	defer cancel()
 
 	if err := r.Exists(ctx); err != nil {
-		zap.S().Debugf("repo %q exists or not: %v", req.Msg.Id, err)
+		zap.S().Debugf("repo %q exists or not: %v", req.Msg.Repo.Id, err)
 		if errors.Is(err, restic.ErrRepoNotFound) {
-			zap.S().Debugf("repo %q does not exist", req.Msg.Id)
+			zap.S().Debugf("repo %q does not exist", req.Msg.Repo.Id)
 			return connect.NewResponse(&types.BoolValue{Value: false}), nil
 		}
 		return nil, err
@@ -152,13 +152,13 @@ func (s *BackrestHandler) CheckRepoExists(ctx context.Context, req *connect.Requ
 }
 
 // AddRepo implements POST /v1/config/repo, it includes validation that the repo can be initialized.
-func (s *BackrestHandler) AddRepo(ctx context.Context, req *connect.Request[v1.Repo]) (*connect.Response[v1.Config], error) {
+func (s *BackrestHandler) AddRepo(ctx context.Context, req *connect.Request[v1.AddRepoRequest]) (*connect.Response[v1.Config], error) {
 	c, err := s.config.Get()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get config: %w", err)
 	}
 
-	newRepo := req.Msg
+	newRepo := req.Msg.Repo
 
 	// Deep copy the configuration
 	c = proto.Clone(c).(*v1.Config)
@@ -197,7 +197,7 @@ func (s *BackrestHandler) AddRepo(ctx context.Context, req *connect.Request[v1.R
 
 	newRepo.Guid = guid
 
-	if err := s.addSftpHostKey(newRepo, newRepo.GetTrustSftpHostKey()); err != nil {
+	if err := s.addSftpHostKey(newRepo, req.Msg.GetTrustSftpHostKey()); err != nil {
 		return nil, fmt.Errorf("failed to add sftp host key: %w", err)
 	}
 

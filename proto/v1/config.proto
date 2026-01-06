@@ -83,7 +83,6 @@ message Repo {
   repeated Hook hooks = 7 [json_name="hooks"]; // hooks to run on events for this repo.
   bool auto_unlock = 8 [json_name="autoUnlock"]; // automatically unlock the repo when needed.
   bool auto_initialize = 12 [json_name="autoInitialize"]; // whether the repo should be auto-initialized if not found.
-  bool trust_sftp_host_key = 13 [json_name="trustSftpHostKey"]; // trust the SFTP host key if it is unknown.
   CommandPrefix command_prefix = 10 [json_name="commandPrefix"]; // modifiers for the restic commands
 }
 
