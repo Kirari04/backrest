@@ -86,6 +86,8 @@ export const AddRepoModal = ({ template }: { template: Repo | null }) => {
   const uri = Form.useWatch("uri", form);
   const [sftpIdentityFile, setSftpIdentityFile] = useState("");
   const [sftpPort, setSftpPort] = useState<number | null>(null);
+  const [sftpUsername, setSftpUsername] = useState("");
+  const [sftpPassword, setSftpPassword] = useState("");
   const [modal, contextHolder] = Modal.useModal();
 
   useEffect(() => {
@@ -119,7 +121,8 @@ export const AddRepoModal = ({ template }: { template: Repo | null }) => {
 
     const currentFlags = form.getFieldValue("flags") || [];
     const newFlags = currentFlags.filter(
-      (f: string) => f && !f.startsWith("--option=sftp.args")
+      (f: string) =>
+        f && !f.includes("sftp.args") && !f.includes("sftp.command")
     );
 
     if (uri?.startsWith("sftp:")) {
@@ -127,7 +130,11 @@ export const AddRepoModal = ({ template }: { template: Repo | null }) => {
       let argsChanged = false;
 
       if (sftpIdentityFile) {
-        sftpArgs += ` -i ${sftpIdentityFile}`;
+        let cleanPath = sftpIdentityFile;
+        if (cleanPath.startsWith("@")) {
+          cleanPath = cleanPath.substring(1);
+        }
+        sftpArgs += ` -i ${cleanPath}`;
         argsChanged = true;
       }
 
@@ -301,7 +308,7 @@ export const AddRepoModal = ({ template }: { template: Repo | null }) => {
             onClickAsync={async () => {
               let repoFormData = await validateForm(form);
               console.log("checking repo", repoFormData);
-              const doCheck = async (trust: boolean) => {
+              const doCheck = async (trust: boolean, confirm: boolean) => {
                 const repo = fromJson(RepoSchema, repoFormData, {
                   ignoreUnknownFields: false,
                 });
@@ -309,10 +316,51 @@ export const AddRepoModal = ({ template }: { template: Repo | null }) => {
                 const req = create(CheckRepoExistsRequestSchema, {
                   repo: repo,
                   trustSftpHostKey: trust,
+                  sftpUsername: sftpUsername,
+                  sftpPassword: sftpPassword,
+                  confirmInstallKey: confirm,
                 });
 
-                const exists = await backrestService.checkRepoExists(req);
-                if (exists.value) {
+                const response = await backrestService.checkRepoExists(req);
+
+                if (response.hostKeyUntrusted) {
+                  modal.confirm({
+                    title: "Unknown SFTP Host Key",
+                    content: (
+                      <>
+                        The host key for this SFTP server is not known.
+                        <br />
+                        Do you want to trust this host and add its key to your
+                        known_hosts file?
+                      </>
+                    ),
+                    onOk: () => doCheck(true, confirm),
+                  });
+                  return;
+                }
+
+                if (response.requiresConfirmation) {
+                  modal.confirm({
+                    title: "Install SSH Key",
+                    content:
+                      "Do you want to install a newly generated SSH key on the server?",
+                    onOk: () => doCheck(trust, true),
+                  });
+                  return;
+                }
+
+                if (response.error) {
+                  throw new Error(response.error);
+                }
+
+                if (response.generatedKeyPath) {
+                  setSftpIdentityFile(response.generatedKeyPath);
+                  setSftpUsername("");
+                  setSftpPassword("");
+                  alertsApi.success("SSH Key generated and installed!");
+                }
+
+                if (response.exists) {
                   alertsApi.success(
                     "Connected successfully to " +
                       repo.uri +
@@ -330,7 +378,7 @@ export const AddRepoModal = ({ template }: { template: Repo | null }) => {
               };
 
               try {
-                await verifySftpHostKey(doCheck);
+                await doCheck(false, false);
               } catch (e: any) {
                 alertsApi.error(formatErrorAlert(e, "Check error: "), 10);
               }
@@ -456,6 +504,41 @@ export const AddRepoModal = ({ template }: { template: Repo | null }) => {
 
           {uri?.startsWith("sftp:") && !template && (
             <>
+              {!sftpIdentityFile && (
+                <Collapse
+                  size="small"
+                  items={[
+                    {
+                      key: "bootstrap",
+                      label: "Bootstrap SSH Key (Optional)",
+                      children: (
+                        <>
+                          <p>
+                            Enter your SSH credentials here. When you click "Test
+                            Configuration", backrest will generate an SSH key pair
+                            and install the public key on the remote server automatically.
+                          </p>
+                          <Form.Item label="SSH Username">
+                            <Input
+                              placeholder="user"
+                              value={sftpUsername}
+                              onChange={(e) => setSftpUsername(e.target.value)}
+                            />
+                          </Form.Item>
+                          <Form.Item label="SSH Password">
+                            <Input.Password
+                              placeholder="password"
+                              value={sftpPassword}
+                              onChange={(e) => setSftpPassword(e.target.value)}
+                            />
+                          </Form.Item>
+                        </>
+                      ),
+                    },
+                  ]}
+                  style={{ marginBottom: "24px" }}
+                />
+              )}
               <Tooltip title="Optional: Path to an SSH identity file for SFTP authentication. This path must be accessible on the machine running backrest.">
                 <Form.Item label="SFTP Identity File">
                   <Input
