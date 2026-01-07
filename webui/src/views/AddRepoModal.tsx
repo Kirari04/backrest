@@ -28,6 +28,10 @@ import {
   RepoSchema,
   Schedule_Clock,
 } from "../../gen/ts/v1/config_pb";
+import {
+  AddRepoRequestSchema,
+  CheckRepoExistsRequestSchema,
+} from "../../gen/ts/v1/service_pb";
 import { StringValueSchema } from "../../gen/ts/types/value_pb";
 import { URIAutocomplete } from "../components/URIAutocomplete";
 import { MinusCircleOutlined, PlusOutlined } from "@ant-design/icons";
@@ -81,6 +85,13 @@ export const AddRepoModal = ({ template }: { template: Repo | null }) => {
   const alertsApi = useAlertApi()!;
   const [config, setConfig] = useConfig();
   const [form] = Form.useForm<JsonValue>();
+  const uri = Form.useWatch("uri", form);
+  const [sftpIdentityFile, setSftpIdentityFile] = useState("");
+  const [sftpPort, setSftpPort] = useState<number | null>(null);
+  const [sftpUsername, setSftpUsername] = useState("");
+  const [sftpPassword, setSftpPassword] = useState("");
+  const [modal, contextHolder] = Modal.useModal();
+
   useEffect(() => {
     const initVal = template
       ? toJson(RepoSchema, template, {
@@ -88,7 +99,64 @@ export const AddRepoModal = ({ template }: { template: Repo | null }) => {
         })
       : toJson(RepoSchema, repoDefaults, { alwaysEmitImplicit: true });
     form.setFieldsValue(initVal);
+
+    // When creating a new repo, reset the SFTP fields.
+    if (!template) {
+      setSftpIdentityFile("");
+      setSftpPort(null);
+    }
   }, [template]);
+
+  useEffect(() => {
+    if (!uri?.startsWith("sftp:")) {
+      setSftpIdentityFile("");
+      setSftpPort(null);
+    }
+  }, [uri]);
+
+  // This effect now only runs for NEW repos to build the flag.
+  useEffect(() => {
+    // If we are editing, we don't touch the flags. The user can edit them manually.
+    if (template) {
+      return;
+    }
+
+    const currentFlags = form.getFieldValue("flags") || [];
+    const newFlags = currentFlags.filter(
+      (f: string) =>
+        f && !f.includes("sftp.args") && !f.includes("sftp.command")
+    );
+
+    if (uri?.startsWith("sftp:")) {
+      let sftpArgs = "-oBatchMode=yes";
+      let argsChanged = false;
+
+      if (sftpIdentityFile) {
+        let cleanPath = sftpIdentityFile;
+        if (cleanPath.startsWith("@")) {
+          cleanPath = cleanPath.substring(1);
+        }
+        sftpArgs += ` -i ${cleanPath}`;
+        argsChanged = true;
+      }
+
+      if (sftpPort && sftpPort !== 0 && sftpPort !== 22) {
+        sftpArgs += ` -p ${sftpPort}`;
+        argsChanged = true;
+      }
+
+      if (argsChanged) {
+        newFlags.push(`--option=sftp.args='${sftpArgs}'`);
+      }
+    }
+
+    const sortedCurrent = [...(currentFlags || [])].sort();
+    const sortedNew = [...newFlags].sort();
+
+    if (JSON.stringify(sortedCurrent) !== JSON.stringify(sortedNew)) {
+      form.setFieldsValue({ flags: newFlags });
+    }
+  }, [uri, sftpIdentityFile, sftpPort, template]);
 
   if (!config) {
     return null;
@@ -115,40 +183,86 @@ export const AddRepoModal = ({ template }: { template: Repo | null }) => {
     }
   };
 
+  const verifySftpHostKey = async (
+    action: (trust: boolean) => Promise<any>
+  ) => {
+    try {
+      await action(false);
+    } catch (e: any) {
+      if (
+        e.message &&
+        e.message.includes("SFTP host key verification failed")
+      ) {
+        modal.confirm({
+          title: "Unknown SFTP Host Key",
+          content: (
+            <>
+              The host key for this SFTP server is not known.
+              <br />
+              Do you want to trust this host and add its key to your known_hosts
+              file?
+            </>
+          ),
+          onOk: async () => {
+            try {
+              await action(true);
+            } catch (retryErr: any) {
+              alertsApi.error(
+                formatErrorAlert(retryErr, "Operation error: "),
+                10
+              );
+            }
+          },
+        });
+      } else {
+        throw e;
+      }
+    }
+  };
+
   const handleOk = async () => {
     setConfirmLoading(true);
 
     try {
       let repoFormData = await validateForm(form);
-      const repo = fromJson(RepoSchema, repoFormData, {
-        ignoreUnknownFields: false,
-      });
+      const doSubmit = async (trust: boolean) => {
+        const repo = fromJson(RepoSchema, repoFormData, {
+          ignoreUnknownFields: false,
+        });
 
-      if (template !== null) {
-        // We are in the update repo flow, update the repo via the service
-        setConfig(await backrestService.addRepo(repo));
-        showModal(null);
-        alertsApi.success(m.add_repo_modal_success_updated({ uri: repo.uri }));
-      } else {
-        // We are in the create repo flow, create the new repo via the service
-        setConfig(await backrestService.addRepo(repo));
-        showModal(null);
-        alertsApi.success(m.add_repo_modal_success_added({ uri: repo.uri }));
-      }
+        const req = create(AddRepoRequestSchema, {
+          repo: repo,
+          trustSftpHostKey: trust,
+        });
 
-      try {
-        // Update the snapshots for the repo to confirm the config works.
-        // TODO: this operation is only used here, find a different RPC for this purpose.
-        await backrestService.listSnapshots({ repoId: repo.id });
-      } catch (e: any) {
-        alertsApi.error(
-          formatErrorAlert(
-            e,
-            m.add_repo_modal_error_list_snapshots()
-          ),
-          10
-        );
-      }
+        if (template !== null) {
+          // We are in the update repo flow, update the repo via the service
+          setConfig(await backrestService.addRepo(req));
+          showModal(null);
+          alertsApi.success(m.add_repo_modal_success_updated({ uri: repo.uri }));
+        } else {
+          // We are in the create repo flow, create the new repo via the service
+          setConfig(await backrestService.addRepo(req));
+          showModal(null);
+          alertsApi.success(m.add_repo_modal_success_added({ uri: repo.uri }));
+        }
+
+        try {
+          // Update the snapshots for the repo to confirm the config works.
+          // TODO: this operation is only used here, find a different RPC for this purpose.
+          await backrestService.listSnapshots({ repoId: repo.id });
+        } catch (e: any) {
+          alertsApi.error(
+            formatErrorAlert(
+              e,
+              m.add_repo_modal_error_list_snapshots()
+            ),
+            10
+          );
+        }
+      };
+
+      await verifySftpHostKey(doSubmit);
     } catch (e: any) {
       alertsApi.error(formatErrorAlert(e, m.add_plan_modal_error_operation_prefix()), 10);
     } finally {
@@ -162,6 +276,7 @@ export const AddRepoModal = ({ template }: { template: Repo | null }) => {
 
   return (
     <>
+      {contextHolder}
       <Modal
         open={true}
         onCancel={handleCancel}
@@ -192,12 +307,59 @@ export const AddRepoModal = ({ template }: { template: Repo | null }) => {
             onClickAsync={async () => {
               let repoFormData = await validateForm(form);
               console.log("checking repo", repoFormData);
-              const repo = fromJson(RepoSchema, repoFormData, {
-                ignoreUnknownFields: false,
-              });
-              try {
-                const exists = await backrestService.checkRepoExists(repo);
-                if (exists.value) {
+              const doCheck = async (trust: boolean, confirm: boolean) => {
+                const repo = fromJson(RepoSchema, repoFormData, {
+                  ignoreUnknownFields: false,
+                });
+
+                const req = create(CheckRepoExistsRequestSchema, {
+                  repo: repo,
+                  trustSftpHostKey: trust,
+                  sftpUsername: sftpUsername,
+                  sftpPassword: sftpPassword,
+                  confirmInstallKey: confirm,
+                });
+
+                const response = await backrestService.checkRepoExists(req);
+
+                if (response.hostKeyUntrusted) {
+                  modal.confirm({
+                    title: "Unknown SFTP Host Key",
+                    content: (
+                      <>
+                        The host key for this SFTP server is not known.
+                        <br />
+                        Do you want to trust this host and add its key to your
+                        known_hosts file?
+                      </>
+                    ),
+                    onOk: () => doCheck(true, confirm),
+                  });
+                  return;
+                }
+
+                if (response.requiresConfirmation) {
+                  modal.confirm({
+                    title: "Install SSH Key",
+                    content:
+                      "Do you want to install a newly generated SSH key on the server?",
+                    onOk: () => doCheck(trust, true),
+                  });
+                  return;
+                }
+
+                if (response.error) {
+                  throw new Error(response.error);
+                }
+
+                if (response.generatedKeyPath) {
+                  setSftpIdentityFile(response.generatedKeyPath);
+                  setSftpUsername("");
+                  setSftpPassword("");
+                  alertsApi.success("SSH Key generated and installed!");
+                }
+
+                if (response.exists) {
                   alertsApi.success(
                     m.add_repo_modal_test_success_existing({ uri: repo.uri }),
                     10
@@ -208,6 +370,10 @@ export const AddRepoModal = ({ template }: { template: Repo | null }) => {
                     10
                   );
                 }
+              };
+
+              try {
+                await doCheck(false, false);
               } catch (e: any) {
                 alertsApi.error(formatErrorAlert(e, m.add_repo_modal_test_error()), 10);
               }
@@ -330,6 +496,66 @@ export const AddRepoModal = ({ template }: { template: Repo | null }) => {
               <URIAutocomplete disabled={!!template} />
             </Form.Item>
           </Tooltip>
+
+          {uri?.startsWith("sftp:") && !template && (
+            <>
+              {!sftpIdentityFile && (
+                <Collapse
+                  size="small"
+                  items={[
+                    {
+                      key: "bootstrap",
+                      label: "Bootstrap SSH Key (Optional)",
+                      children: (
+                        <>
+                          <p>
+                            Enter your SSH credentials here. When you click "Test
+                            Configuration", backrest will generate an SSH key pair
+                            and install the public key on the remote server automatically.
+                          </p>
+                          <Form.Item label="SSH Username">
+                            <Input
+                              placeholder="user"
+                              value={sftpUsername}
+                              onChange={(e) => setSftpUsername(e.target.value)}
+                            />
+                          </Form.Item>
+                          <Form.Item label="SSH Password">
+                            <Input.Password
+                              placeholder="password"
+                              value={sftpPassword}
+                              onChange={(e) => setSftpPassword(e.target.value)}
+                            />
+                          </Form.Item>
+                        </>
+                      ),
+                    },
+                  ]}
+                  style={{ marginBottom: "24px" }}
+                />
+              )}
+              <Tooltip title="Optional: Path to an SSH identity file for SFTP authentication. This path must be accessible on the machine running backrest.">
+                <Form.Item label="SFTP Identity File">
+                  <Input
+                    placeholder="/home/user/.ssh/id_rsa"
+                    value={sftpIdentityFile}
+                    onChange={(e) => setSftpIdentityFile(e.target.value)}
+                  />
+                </Form.Item>
+              </Tooltip>
+              <Tooltip title="Optional: Specify a custom port for SFTP connection. Defaults to 22.">
+                <Form.Item label="SFTP Port">
+                  <InputNumber
+                    min={1}
+                    max={65535}
+                    placeholder="22"
+                    value={sftpPort}
+                    onChange={(value) => setSftpPort(value)}
+                  />
+                </Form.Item>
+              </Tooltip>
+            </>
+          )}
 
           {/* Repo.password */}
           <Tooltip
