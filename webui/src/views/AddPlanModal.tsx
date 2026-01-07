@@ -12,8 +12,10 @@ import {
   Col,
   Collapse,
   Checkbox,
+  AutoComplete,
+  Flex,
 } from "antd";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useShowModal } from "../components/ModalManager";
 import {
   ConfigSchema,
@@ -44,6 +46,15 @@ import {
 import { clone, create, equals, fromJson, toJson } from "@bufbuild/protobuf";
 import { formatDuration } from "../lib/formatting";
 import { getMinimumCronDuration } from "../lib/cronutil";
+import { debounce } from "../lib/util";
+import { StringList } from "../../gen/ts/types/value_pb";
+import { isWindows } from "../state/buildcfg";
+import * as m from "../paraglide/messages";
+
+const { TextArea } = Input;
+const sep = isWindows ? "\\" : "/";
+
+
 
 const planDefaults = create(PlanSchema, {
   schedule: {
@@ -72,11 +83,11 @@ export const AddPlanModal = ({ template }: { template: Plan | null }) => {
   const [config, setConfig] = useConfig();
   const [form] = Form.useForm();
   useEffect(() => {
-    form.setFieldsValue(
-      template
-        ? toJson(PlanSchema, template, { alwaysEmitImplicit: true })
-        : toJson(PlanSchema, planDefaults, { alwaysEmitImplicit: true })
-    );
+    const formData = template
+      ? toJson(PlanSchema, template, { alwaysEmitImplicit: true })
+      : toJson(PlanSchema, planDefaults, { alwaysEmitImplicit: true });
+
+    form.setFieldsValue(formData);
   }, [template]);
 
   if (!config) {
@@ -88,7 +99,7 @@ export const AddPlanModal = ({ template }: { template: Plan | null }) => {
 
     try {
       if (!template) {
-        throw new Error("template not found");
+        throw new Error(m.add_plan_modal_error_template_not_found());
       }
 
       const configCopy = clone(ConfigSchema, config);
@@ -96,7 +107,7 @@ export const AddPlanModal = ({ template }: { template: Plan | null }) => {
       // Remove the plan from the config
       const idx = configCopy.plans.findIndex((r) => r.id === template.id);
       if (idx === -1) {
-        throw new Error("failed to update config, plan to delete not found");
+        throw new Error(m.add_plan_modal_error_plan_delete_not_found());
       }
       configCopy.plans.splice(idx, 1);
 
@@ -105,11 +116,11 @@ export const AddPlanModal = ({ template }: { template: Plan | null }) => {
       showModal(null);
 
       alertsApi.success(
-        "Plan deleted from config, but not from restic repo. Snapshots will remain in storage and operations will be tracked until manually deleted. Reusing a deleted plan ID is not recommended if backups have already been performed.",
+        m.add_plan_modal_success_plan_deleted(),
         30
       );
     } catch (e: any) {
-      alertsApi.error(formatErrorAlert(e, "Destroy error:"), 15);
+      alertsApi.error(formatErrorAlert(e, m.add_plan_modal_error_destroy_prefix()), 15);
     } finally {
       setConfirmLoading(false);
     }
@@ -120,6 +131,7 @@ export const AddPlanModal = ({ template }: { template: Plan | null }) => {
 
     try {
       let planFormData = await validateForm(form);
+
       const plan = fromJson(PlanSchema, planFormData, {
         ignoreUnknownFields: false,
       });
@@ -152,7 +164,7 @@ export const AddPlanModal = ({ template }: { template: Plan | null }) => {
       setConfig(await backrestService.setConfig(configCopy));
       showModal(null);
     } catch (e: any) {
-      alertsApi.error(formatErrorAlert(e, "Operation error: "), 15);
+      alertsApi.error(formatErrorAlert(e, m.add_plan_modal_error_operation_prefix()), 15);
       console.error(e);
     } finally {
       setConfirmLoading(false);
@@ -170,11 +182,11 @@ export const AddPlanModal = ({ template }: { template: Plan | null }) => {
       <Modal
         open={true}
         onCancel={handleCancel}
-        title={template ? "Update Plan" : "Add Plan"}
+        title={template ? m.add_plan_modal_title_update() : m.add_plan_modal_title_add()}
         width="60vw"
         footer={[
           <Button loading={confirmLoading} key="back" onClick={handleCancel}>
-            Cancel
+            {m.add_plan_modal_button_cancel()}
           </Button>,
           template != null ? (
             <ConfirmButton
@@ -182,61 +194,61 @@ export const AddPlanModal = ({ template }: { template: Plan | null }) => {
               type="primary"
               danger
               onClickAsync={handleDestroy}
-              confirmTitle="Confirm Delete"
+              confirmTitle={m.add_plan_modal_button_confirm_delete()}
             >
-              Delete
+              {m.add_plan_modal_button_delete()}
             </ConfirmButton>
           ) : null,
           <SpinButton key="submit" type="primary" onClickAsync={handleOk}>
-            Submit
+            {m.add_plan_modal_button_submit()}
           </SpinButton>,
         ]}
         maskClosable={false}
       >
         <p>
-          See{" "}
+          {m.add_plan_modal_see_guide_prefix()}{" "}
           <a
             href="https://garethgeorge.github.io/backrest/introduction/getting-started"
             target="_blank"
           >
-            backrest getting started guide
+            {m.add_plan_modal_see_guide_link()}
           </a>{" "}
-          for plan configuration instructions.
+          {m.add_plan_modal_see_guide_suffix()}
         </p>
         <br />
         <Form
           autoComplete="off"
           form={form}
-          labelCol={{ span: 6 }}
-          wrapperCol={{ span: 16 }}
+          labelCol={{ flex: "160px" }}
+          wrapperCol={{ flex: "auto" }}
           disabled={confirmLoading}
         >
           {/* Plan.id */}
           <Form.Item<Plan>
             hasFeedback
             name="id"
-            label="Plan Name"
+            label={m.add_plan_modal_field_plan_name()}
             initialValue={template ? template.id : ""}
             validateTrigger={["onChange", "onBlur"]}
-            tooltip="Unique ID that identifies this plan in the backrest UI (e.g. s3-myplan). This cannot be changed after creation."
+            tooltip={m.add_plan_modal_field_plan_name_tooltip()}
             rules={[
               {
                 required: true,
-                message: "Please input plan name",
+                message: m.add_plan_modal_validation_plan_name_required(),
               },
               {
                 validator: async (_, value) => {
                   if (template) return;
                   if (config?.plans?.find((r) => r.id === value)) {
-                    throw new Error("Plan with name already exists");
+                    throw new Error(m.add_plan_modal_validation_plan_exists());
                   }
                 },
-                message: "Plan with name already exists",
+                message: m.add_plan_modal_validation_plan_exists(),
               },
               {
                 pattern: namePattern,
                 message:
-                  "Name must be alphanumeric with dashes or underscores as separators",
+                  m.add_plan_modal_validation_plan_name_pattern(),
               },
             ]}
           >
@@ -249,14 +261,14 @@ export const AddPlanModal = ({ template }: { template: Plan | null }) => {
           {/* Plan.repo */}
           <Form.Item<Plan>
             name="repo"
-            label="Repository"
+            label={m.add_plan_modal_field_repository()}
             validateTrigger={["onChange", "onBlur"]}
             initialValue={template ? template.repo : ""}
-            tooltip="The repo that backrest will store your snapshots in."
+            tooltip={m.add_plan_modal_field_repository_tooltip()}
             rules={[
               {
                 required: true,
-                message: "Please select repository",
+                message: m.add_plan_modal_validation_repository_required(),
               },
             ]}
           >
@@ -270,10 +282,24 @@ export const AddPlanModal = ({ template }: { template: Plan | null }) => {
           </Form.Item>
 
           {/* Plan.paths */}
-          <Form.Item label="Paths" required={true}>
+          <Form.Item
+            label={m.add_plan_modal_field_paths()}
+            required={true}
+            tooltip={m.add_plan_modal_field_paths_tooltip()}
+          >
             <Form.List
               name="paths"
-              rules={[]}
+              rules={[
+                {
+                  validator: async (_, paths) => {
+                    if (!paths || paths.length === 0) {
+                      throw new Error(
+                        m.add_plan_modal_validation_paths_required()
+                      );
+                    }
+                  },
+                },
+              ]}
               initialValue={template ? template.paths : []}
             >
               {(fields, { add, remove }, { errors }) => (
@@ -281,28 +307,32 @@ export const AddPlanModal = ({ template }: { template: Plan | null }) => {
                   {fields.map((field, index) => {
                     const { key, ...restField } = field;
                     return (
-                      <Form.Item key={field.key}>
-                        <Form.Item
-                          {...restField}
-                          validateTrigger={["onChange", "onBlur"]}
-                          initialValue={""}
-                          rules={[
-                            {
-                              required: true,
-                            },
-                          ]}
-                          noStyle
-                        >
-                          <URIAutocomplete
-                            style={{ width: "90%" }}
-                            onBlur={() => form.validateFields()}
+                      <Form.Item required={false} key={field.key}>
+                        <Flex gap="small" align="center">
+                          <Form.Item
+                            {...restField}
+                            validateTrigger={["onChange", "onBlur"]}
+                            initialValue={""}
+                            rules={[
+                              {
+                                required: true,
+                                message:
+                                  m.add_plan_modal_validation_paths_valid_required(),
+                              },
+                            ]}
+                            noStyle
+                          >
+                            <URIAutocomplete
+                              style={{ flex: 1 }}
+                              onBlur={() => form.validateFields()}
+                              globAllowed={true}
+                            />
+                          </Form.Item>
+                          <MinusCircleOutlined
+                            className="dynamic-delete-button"
+                            onClick={() => remove(field.name)}
                           />
-                        </Form.Item>
-                        <MinusCircleOutlined
-                          className="dynamic-delete-button"
-                          onClick={() => remove(field.name)}
-                          style={{ paddingLeft: "5px" }}
-                        />
+                        </Flex>
                       </Form.Item>
                     );
                   })}
@@ -310,7 +340,7 @@ export const AddPlanModal = ({ template }: { template: Plan | null }) => {
                     <Button
                       type="dashed"
                       onClick={() => add()}
-                      style={{ width: "90%" }}
+                      block
                       icon={<PlusOutlined />}
                     >
                       Add Path
@@ -324,18 +354,18 @@ export const AddPlanModal = ({ template }: { template: Plan | null }) => {
 
           {/* Plan.excludes */}
           <Form.Item
-            label="Excludes"
+            label={m.add_plan_modal_field_excludes()}
             required={false}
             tooltip={
               <>
-                Paths to exclude from your backups. See the{" "}
+                {m.add_plan_modal_field_excludes_tooltip_prefix()}{" "}
                 <a
                   href="https://restic.readthedocs.io/en/latest/040_backup.html#excluding-files"
                   target="_blank"
                 >
-                  restic docs
+                  {m.add_plan_modal_field_excludes_tooltip_link()}
                 </a>{" "}
-                for more info.
+                {m.add_plan_modal_field_excludes_tooltip_suffix()}
               </>
             }
           >
@@ -350,28 +380,29 @@ export const AddPlanModal = ({ template }: { template: Plan | null }) => {
                     const { key, ...restField } = field;
                     return (
                       <Form.Item required={false} key={field.key}>
-                        <Form.Item
-                          {...restField}
-                          validateTrigger={["onChange", "onBlur"]}
-                          initialValue={""}
-                          rules={[
-                            {
-                              required: true,
-                            },
-                          ]}
-                          noStyle
-                        >
-                          <URIAutocomplete
-                            style={{ width: "90%" }}
-                            onBlur={() => form.validateFields()}
-                            globAllowed={true}
+                        <Flex gap="small" align="center">
+                          <Form.Item
+                            {...restField}
+                            validateTrigger={["onChange", "onBlur"]}
+                            initialValue={""}
+                            rules={[
+                              {
+                                required: true,
+                              },
+                            ]}
+                            noStyle
+                          >
+                            <URIAutocomplete
+                              style={{ flex: 1 }}
+                              onBlur={() => form.validateFields()}
+                              globAllowed={true}
+                            />
+                          </Form.Item>
+                          <MinusCircleOutlined
+                            className="dynamic-delete-button"
+                            onClick={() => remove(field.name)}
                           />
-                        </Form.Item>
-                        <MinusCircleOutlined
-                          className="dynamic-delete-button"
-                          onClick={() => remove(field.name)}
-                          style={{ paddingLeft: "5px" }}
-                        />
+                        </Flex>
                       </Form.Item>
                     );
                   })}
@@ -379,10 +410,10 @@ export const AddPlanModal = ({ template }: { template: Plan | null }) => {
                     <Button
                       type="dashed"
                       onClick={() => add()}
-                      style={{ width: "90%" }}
+                      block
                       icon={<PlusOutlined />}
                     >
-                      Add Exclusion Glob
+                      {m.add_plan_modal_field_excludes_add()}
                     </Button>
                     <Form.ErrorList errors={errors} />
                   </Form.Item>
@@ -393,18 +424,18 @@ export const AddPlanModal = ({ template }: { template: Plan | null }) => {
 
           {/* Plan.iexcludes */}
           <Form.Item
-            label="Excludes (Case Insensitive)"
+            label={m.add_plan_modal_field_iexcludes()}
             required={false}
             tooltip={
               <>
-                Case insensitive paths to exclude from your backups. See the{" "}
+                {m.add_plan_modal_field_iexcludes_tooltip_prefix()}{" "}
                 <a
                   href="https://restic.readthedocs.io/en/latest/040_backup.html#excluding-files"
                   target="_blank"
                 >
-                  restic docs
+                  {m.add_plan_modal_field_excludes_tooltip_link()}
                 </a>{" "}
-                for more info.
+                {m.add_plan_modal_field_excludes_tooltip_suffix()}
               </>
             }
           >
@@ -419,28 +450,29 @@ export const AddPlanModal = ({ template }: { template: Plan | null }) => {
                     const { key, ...restField } = field;
                     return (
                       <Form.Item required={false} key={field.key}>
-                        <Form.Item
-                          {...restField}
-                          validateTrigger={["onChange", "onBlur"]}
-                          initialValue={""}
-                          rules={[
-                            {
-                              required: true,
-                            },
-                          ]}
-                          noStyle
-                        >
-                          <URIAutocomplete
-                            style={{ width: "90%" }}
-                            onBlur={() => form.validateFields()}
-                            globAllowed={true}
+                        <Flex gap="small" align="center">
+                          <Form.Item
+                            {...restField}
+                            validateTrigger={["onChange", "onBlur"]}
+                            initialValue={""}
+                            rules={[
+                              {
+                                required: true,
+                              },
+                            ]}
+                            noStyle
+                          >
+                            <URIAutocomplete
+                              style={{ flex: 1 }}
+                              onBlur={() => form.validateFields()}
+                              globAllowed={true}
+                            />
+                          </Form.Item>
+                          <MinusCircleOutlined
+                            className="dynamic-delete-button"
+                            onClick={() => remove(field.name)}
                           />
-                        </Form.Item>
-                        <MinusCircleOutlined
-                          className="dynamic-delete-button"
-                          onClick={() => remove(field.name)}
-                          style={{ paddingLeft: "5px" }}
-                        />
+                        </Flex>
                       </Form.Item>
                     );
                   })}
@@ -448,10 +480,10 @@ export const AddPlanModal = ({ template }: { template: Plan | null }) => {
                     <Button
                       type="dashed"
                       onClick={() => add()}
-                      style={{ width: "90%" }}
+                      block
                       icon={<PlusOutlined />}
                     >
-                      Add Case Insensitive Exclusion Glob
+                      {m.add_plan_modal_field_iexcludes_add()}
                     </Button>
                     <Form.ErrorList errors={errors} />
                   </Form.Item>
@@ -461,7 +493,7 @@ export const AddPlanModal = ({ template }: { template: Plan | null }) => {
           </Form.Item>
 
           {/* Plan.cron */}
-          <Form.Item label="Backup Schedule">
+          <Form.Item label={m.add_plan_modal_field_schedule()}>
             <ScheduleFormItem
               name={["schedule"]}
               defaults={ScheduleDefaultsDaily}
@@ -471,8 +503,8 @@ export const AddPlanModal = ({ template }: { template: Plan | null }) => {
           {/* Plan.backup_flags */}
           <Form.Item
             label={
-              <Tooltip title="Extra flags to add to the 'restic backup' command">
-                Backup Flags
+              <Tooltip title={m.add_plan_modal_field_backup_flags_tooltip()}>
+                {m.add_plan_modal_field_backup_flags()}
               </Tooltip>
             }
           >
@@ -483,30 +515,31 @@ export const AddPlanModal = ({ template }: { template: Plan | null }) => {
                     const { key, ...restField } = field;
                     return (
                       <Form.Item required={false} key={field.key}>
-                        <Form.Item
-                          {...restField}
-                          validateTrigger={["onChange", "onBlur"]}
-                          rules={[
-                            {
-                              required: true,
-                              whitespace: true,
-                              pattern: /^\-\-?.*$/,
-                              message:
-                                "Value should be a CLI flag e.g. see restic backup --help",
-                            },
-                          ]}
-                          noStyle
-                        >
-                          <Input
-                            placeholder="--flag"
-                            style={{ width: "90%" }}
+                        <Flex gap="small" align="center">
+                          <Form.Item
+                            {...restField}
+                            validateTrigger={["onChange", "onBlur"]}
+                            rules={[
+                              {
+                                required: true,
+                                whitespace: true,
+                                pattern: /^\-\-?.*$/,
+                                message:
+                                  m.add_plan_modal_validation_flag_pattern(),
+                              },
+                            ]}
+                            noStyle
+                          >
+                            <Input
+                              placeholder="--flag"
+                              style={{ flex: 1 }}
+                            />
+                          </Form.Item>
+                          <MinusCircleOutlined
+                            className="dynamic-delete-button"
+                            onClick={() => remove(index)}
                           />
-                        </Form.Item>
-                        <MinusCircleOutlined
-                          className="dynamic-delete-button"
-                          onClick={() => remove(index)}
-                          style={{ paddingLeft: "5px" }}
-                        />
+                        </Flex>
                       </Form.Item>
                     );
                   })}
@@ -514,10 +547,10 @@ export const AddPlanModal = ({ template }: { template: Plan | null }) => {
                     <Button
                       type="dashed"
                       onClick={() => add()}
-                      style={{ width: "90%" }}
+                      block
                       icon={<PlusOutlined />}
                     >
-                      Set Flag
+                      {m.add_plan_modal_field_backup_flags_add()}
                     </Button>
                     <Form.ErrorList errors={errors} />
                   </Form.Item>
@@ -531,7 +564,7 @@ export const AddPlanModal = ({ template }: { template: Plan | null }) => {
 
           {/* Plan.hooks */}
           <Form.Item
-            label={<Tooltip title={hooksListTooltipText}>Hooks</Tooltip>}
+            label={<Tooltip title={hooksListTooltipText}>{m.add_plan_modal_field_hooks()}</Tooltip>}
           >
             <HooksFormList />
           </Form.Item>
@@ -543,7 +576,7 @@ export const AddPlanModal = ({ template }: { template: Plan | null }) => {
                 items={[
                   {
                     key: "1",
-                    label: "Plan Config as JSON",
+                    label: m.add_plan_modal_preview_json(),
                     children: (
                       <Typography>
                         <pre>

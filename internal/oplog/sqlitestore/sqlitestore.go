@@ -9,11 +9,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	v1 "github.com/garethgeorge/backrest/gen/go/v1"
+	"github.com/garethgeorge/backrest/internal/config/migrations"
 	"github.com/garethgeorge/backrest/internal/ioutil"
 	"github.com/garethgeorge/backrest/internal/kvstore"
 	"github.com/garethgeorge/backrest/internal/oplog"
@@ -37,14 +40,14 @@ const (
 )
 
 type SqliteStore struct {
-	dbpool    *sql.DB
-	lastIDVal atomic.Int64
-	dblock    *flock.Flock
+	dbpool *sql.DB
+	dblock *flock.Flock
 
 	ogidCache *lru.TwoQueueCache[opGroupInfo, int64]
 
 	kvstore      kvstore.KvStore
 	highestModno atomic.Int64
+	highestOpID  atomic.Int64
 }
 
 var _ oplog.OpStore = (*SqliteStore)(nil)
@@ -93,6 +96,9 @@ func NewSqliteStore(db string) (*SqliteStore, error) {
 	} else if !locked {
 		return nil, ErrLocked
 	}
+	if err := store.backup(db, 3, false); err != nil {
+		return nil, fmt.Errorf("backup sqlite db: %v", err)
+	}
 	if err := store.init(); err != nil {
 		return nil, err
 	}
@@ -135,26 +141,75 @@ func (m *SqliteStore) init() error {
 	if err := applySqliteMigrations(m, m.dbpool); err != nil {
 		return err
 	}
-
-	var lastID int64
-	err := m.dbpool.QueryRowContext(context.Background(), "SELECT operations.id FROM operations ORDER BY operations.id DESC LIMIT 1").Scan(&lastID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("init sqlite: %v", err)
+	// highestOpID from all instances
+	highestID, _, err := m.GetHighestOpIDAndModno(oplog.Query{})
+	if err != nil {
+		return err
 	}
-	m.lastIDVal.Store(lastID)
-
-	var highestModno int64
-	err = m.dbpool.QueryRowContext(context.Background(), "SELECT operations.modno FROM operations ORDER BY operations.modno DESC LIMIT 1").Scan(&highestModno)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("init sqlite: %v", err)
+	_, highestModno, err := m.GetHighestOpIDAndModno(oplog.Query{}.SetOriginalInstanceKeyid(""))
+	if err != nil {
+		return err
 	}
 	m.highestModno.Store(highestModno)
+	m.highestOpID.Store(highestID)
+	return nil
+}
+
+// backup creates a backup of the database using VACUUM INTO.
+// keepCount specifies how many old backups to keep (older ones are deleted).
+// force skips the time check and creates a backup even if the latest is recent.
+func (m *SqliteStore) backup(to string, keepCount int, force bool) error {
+	dir := filepath.Dir(to)
+	base := filepath.Base(to)
+	pattern := fmt.Sprintf("%s-*.backup", base)
+	matches, err := filepath.Glob(filepath.Join(dir, pattern))
+	if err != nil {
+		return fmt.Errorf("glob for old backups: %v", err)
+	}
+	sort.Strings(matches)
+
+	backupSuffix := fmt.Sprintf("s%02dm%02d.backup", sqlSchemaVersion, migrations.CurrentVersion)
+	if !force && len(matches) > 0 {
+		latestBackup := matches[len(matches)-1]
+		info, err := os.Stat(latestBackup)
+		if err != nil {
+			return fmt.Errorf("stat latest backup %q: %w", latestBackup, err)
+		}
+		if strings.HasSuffix(latestBackup, backupSuffix) && time.Since(info.ModTime()) < 7*24*time.Hour {
+			// Don't create a new backup more than once a week if the last one matches the schema.
+			return nil
+		}
+	}
+
+	// Create the backup using VACUUM INTO
+	backupPath := fmt.Sprintf("%s-%s-%s", to, time.Now().Format("20060102.150405.000"), backupSuffix)
+	_, err = m.dbpool.ExecContext(context.Background(), "VACUUM INTO ?", backupPath)
+	if err != nil {
+		return fmt.Errorf("backup sqlite db: %v", err)
+	}
+
+	// Delete old backups, keeping only the specified number
+	if len(matches) > keepCount-1 {
+		toDelete := matches[:len(matches)-keepCount+1]
+		for _, f := range toDelete {
+			if err := os.Remove(f); err != nil {
+				return fmt.Errorf("delete old backup %q: %w", f, err)
+			}
+		}
+	}
 
 	return nil
 }
 
-func (m *SqliteStore) nextModno() int64 {
-	return m.highestModno.Add(1)
+func (m *SqliteStore) GetHighestOpIDAndModno(q oplog.Query) (int64, int64, error) {
+	var highestID sql.NullInt64
+	var highestModno sql.NullInt64
+	where, args := m.buildQueryWhereClause(q, false)
+	row := m.dbpool.QueryRowContext(context.Background(), "SELECT MAX(operations.id), MAX(operations.modno) FROM operations JOIN operation_groups ON operations.ogid = operation_groups.ogid WHERE "+where, args...)
+	if err := row.Scan(&highestID, &highestModno); err != nil {
+		return 0, 0, err
+	}
+	return highestID.Int64, highestModno.Int64, nil
 }
 
 func (m *SqliteStore) Version() (int64, error) {
@@ -197,6 +252,10 @@ func (m *SqliteStore) buildQueryWhereClause(q oplog.Query, includeSelectClauses 
 		query = append(query, " AND operation_groups.instance_id = ?")
 		args = append(args, *q.InstanceID)
 	}
+	if q.OriginalInstanceKeyid != nil {
+		query = append(query, " AND operation_groups.original_instance_keyid = ?")
+		args = append(args, *q.OriginalInstanceKeyid)
+	}
 	if q.SnapshotID != nil {
 		query = append(query, " AND operations.snapshot_id = ?")
 		args = append(args, *q.SnapshotID)
@@ -212,6 +271,10 @@ func (m *SqliteStore) buildQueryWhereClause(q oplog.Query, includeSelectClauses 
 	if q.OriginalFlowID != nil {
 		query = append(query, " AND operations.original_flow_id = ?")
 		args = append(args, *q.OriginalFlowID)
+	}
+	if q.ModnoGte != nil {
+		query = append(query, " AND operations.modno >= ?")
+		args = append(args, *q.ModnoGte)
 	}
 	if q.OpIDs != nil {
 		query = append(query, " AND operations.id IN (")
@@ -364,8 +427,6 @@ func (m *SqliteStore) Transform(q oplog.Query, f func(*v1.Operation) (*v1.Operat
 			continue
 		}
 
-		newOp.Modno = m.nextModno()
-
 		if err := m.updateInternal(tx, newOp); err != nil {
 			return err
 		}
@@ -412,8 +473,8 @@ func (m *SqliteStore) Add(op ...*v1.Operation) error {
 	defer tx.Rollback()
 
 	for _, o := range op {
-		o.Id = m.lastIDVal.Add(1)
-		o.Modno = m.nextModno()
+		o.Id = m.highestOpID.Add(1)
+		o.Modno = m.highestModno.Add(1)
 		if o.FlowId == 0 {
 			o.FlowId = o.Id
 		}
@@ -445,7 +506,7 @@ func (m *SqliteStore) Update(op ...*v1.Operation) error {
 
 func (m *SqliteStore) updateInternal(tx *sql.Tx, op ...*v1.Operation) error {
 	for _, o := range op {
-		o.Modno = m.nextModno()
+		o.Modno = m.highestModno.Add(1)
 		if err := protoutil.ValidateOperation(o); err != nil {
 			return err
 		}
@@ -576,7 +637,8 @@ func (m *SqliteStore) ResetForTest(t *testing.T) error {
 	if err != nil {
 		return fmt.Errorf("reset for test: %v", err)
 	}
-	m.lastIDVal.Store(0)
+	m.highestOpID.Store(0)
+	m.highestModno.Store(0)
 	return nil
 }
 

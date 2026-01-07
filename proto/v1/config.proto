@@ -7,15 +7,6 @@ option go_package = "github.com/garethgeorge/backrest/gen/go/v1";
 import "google/protobuf/empty.proto";
 import "v1/crypto.proto";
 
-message HubConfig {
-  repeated InstanceInfo instances = 1 [json_name="instances"];
-  
-  message InstanceInfo {
-    string id = 1 [json_name="id"];
-    string secret = 2 [json_name="secret"]; // secret used to authenticate with the hub.
-  }
-}
-
 
 // Config is the top level config object for restic UI.
 message Config {
@@ -215,6 +206,7 @@ message Hook {
     Slack action_slack = 104 [json_name="actionSlack"];
     Shoutrrr action_shoutrrr = 105 [json_name="actionShoutrrr"];
     Healthchecks action_healthchecks = 106 [json_name="actionHealthchecks"];
+    Telegram action_telegram = 107 [json_name="actionTelegram"];
   }
 
   message Command {
@@ -258,6 +250,12 @@ message Hook {
   message Healthchecks {
     string webhook_url = 1 [json_name="webhookUrl"];
     string template = 2 [json_name="template"];
+  }
+
+  message Telegram {
+    string bot_token = 1 [json_name="botToken"];
+    string chat_id = 2 [json_name="chatId"];
+    string template = 3 [json_name="template"]; // template for the message text.
   }
 }
 

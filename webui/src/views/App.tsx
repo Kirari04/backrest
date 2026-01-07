@@ -7,10 +7,11 @@ import {
   ExclamationOutlined,
   SettingOutlined,
   LoadingOutlined,
+  CloudServerOutlined,
 } from "@ant-design/icons";
 import type { MenuProps } from "antd";
 import { Button, Empty, Layout, Menu, Spin, theme } from "antd";
-import { Config } from "../../gen/ts/v1/config_pb";
+import { Config, Multihost_Peer } from "../../gen/ts/v1/config_pb";
 import { useAlertApi } from "../components/Alerts";
 import { useShowModal } from "../components/ModalManager";
 import { uiBuildVersion } from "../state/buildcfg";
@@ -20,8 +21,8 @@ import {
   subscribeToOperations,
   unsubscribeFromOperations,
 } from "../state/oplog";
-import LogoSvg from "url:../../assets/logo.svg";
-import _ from "lodash";
+import LogoSvg from "../../assets/logo.svg";
+import { debounce, keyBy } from "../lib/util";
 import { Code } from "@connectrpc/connect";
 import { LoginModal } from "./LoginModal";
 import { backrestService, setAuthToken } from "../api";
@@ -33,7 +34,9 @@ import { getStatusForSelector, matchSelector } from "../state/logstate";
 import { Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { MainContentAreaTemplate } from "./MainContentArea";
 import { create } from "@bufbuild/protobuf";
-
+import { PeerState, RepoMetadata } from "../../gen/ts/v1sync/syncservice_pb";
+import { useSyncStates } from "../state/peerstates";
+import * as m from "../paraglide/messages";
 const { Header, Sider } = Layout;
 
 const SummaryDashboard = React.lazy(() =>
@@ -60,6 +63,12 @@ const RepoView = React.lazy(() =>
   }))
 );
 
+const SelectorView = React.lazy(() =>
+  import("./SelectorView").then((m) => ({
+    default: m.SelectorView,
+  }))
+);
+
 const RepoViewContainer = () => {
   const { repoId } = useParams();
   const [config, setConfig] = useConfig();
@@ -72,13 +81,48 @@ const RepoViewContainer = () => {
 
   return (
     <MainContentAreaTemplate
-      breadcrumbs={[{ title: "Repo" }, { title: repoId! }]}
+      breadcrumbs={[{ title: m.app_breadcrumb_repo() }, { title: repoId! }]}
       key={repoId}
     >
       {repo ? (
         <RepoView repo={repo} />
       ) : (
-        <Empty description={`Repo ${repoId} not found`} />
+        <Empty description={m.app_repo_not_found({ repoId: repoId || "" })} />
+      )}
+    </MainContentAreaTemplate>
+  );
+};
+
+const RemoteRepoViewContainer = () => {
+  const { peerInstanceId, repoId } = useParams();
+  const peerStates = useSyncStates();
+
+  // Peer state is used to find the right repo
+  const peerState = peerStates.find(
+    (state) => state.peerInstanceId === peerInstanceId
+  );
+  const peerRepo = (peerState?.knownRepos || []).find((r) => r.id === repoId);
+
+  return (
+    <MainContentAreaTemplate
+      breadcrumbs={[
+        { title: m.app_breadcrumb_peer() },
+        { title: peerInstanceId || m.app_unknown_peer() },
+        { title: m.app_breadcrumb_repo() },
+        { title: repoId || m.app_unknown_repo() },
+      ]}
+      key={`${peerInstanceId}-${repoId}`}
+    >
+      {peerRepo ? (
+        <SelectorView
+          title={m.app_remote_repo_title({ id: peerRepo.id })}
+          sel={create(OpSelectorSchema, {
+            originalInstanceKeyid: peerState?.peerKeyid,
+            repoGuid: peerRepo.guid,
+          })}
+        />
+      ) : (
+        <Empty description={m.app_repo_not_found({ repoId: repoId || "" })} />
       )}
     </MainContentAreaTemplate>
   );
@@ -95,13 +139,13 @@ const PlanViewContainer = () => {
   const plan = config.plans.find((p) => p.id === planId);
   return (
     <MainContentAreaTemplate
-      breadcrumbs={[{ title: "Plan" }, { title: planId! }]}
+      breadcrumbs={[{ title: m.app_breadcrumb_plan() }, { title: planId! }]}
       key={planId}
     >
       {plan ? (
         <PlanView plan={plan} />
       ) : (
-        <Empty description={`Plan ${planId} not found`} />
+        <Empty description={m.app_plan_not_found({ planId: planId || "" })} />
       )}
     </MainContentAreaTemplate>
   );
@@ -114,7 +158,9 @@ export const App: React.FC = () => {
   const navigate = useNavigate();
   const [config, setConfig] = useConfig();
 
-  const items = getSidenavItems(config);
+  const peerStates = useSyncStates();
+
+  const items = getSidenavItems(config, peerStates);
 
   return (
     <Layout style={{ height: "auto", minHeight: "100vh" }}>
@@ -171,7 +217,7 @@ export const App: React.FC = () => {
               window.location.reload();
             }}
           >
-            Logout
+            {m.app_logout()}
           </Button>
         </h1>
       </Header>
@@ -191,7 +237,7 @@ export const App: React.FC = () => {
               <Route
                 path="/"
                 element={
-                  <MainContentAreaTemplate breadcrumbs={[{ title: "Summary" }]}>
+                  <MainContentAreaTemplate breadcrumbs={[{ title: m.app_breadcrumb_summary() }]}>
                     <SummaryDashboard />
                   </MainContentAreaTemplate>
                 }
@@ -200,7 +246,7 @@ export const App: React.FC = () => {
                 path="/getting-started"
                 element={
                   <MainContentAreaTemplate
-                    breadcrumbs={[{ title: "Getting Started" }]}
+                    breadcrumbs={[{ title: m.app_breadcrumb_getting_started() }]}
                   >
                     <GettingStartedGuide />
                   </MainContentAreaTemplate>
@@ -209,10 +255,14 @@ export const App: React.FC = () => {
               <Route path="/plan/:planId" element={<PlanViewContainer />} />
               <Route path="/repo/:repoId" element={<RepoViewContainer />} />
               <Route
+                path="/peer/:peerInstanceId/repo/:repoId"
+                element={<RemoteRepoViewContainer />}
+              />
+              <Route
                 path="/*"
                 element={
                   <MainContentAreaTemplate breadcrumbs={[]}>
-                    <Empty description="Page not found" />
+                    <Empty description={m.app_page_not_found()} />
                   </MainContentAreaTemplate>
                 }
               />
@@ -260,7 +310,7 @@ const AuthenticationBoundary = ({
         }
 
         alertApi.error(
-          "Failed to fetch initial config, typically this means the UI could not connect to the backend",
+          m.app_error_initial_config(),
           0
         );
       });
@@ -273,7 +323,10 @@ const AuthenticationBoundary = ({
   return <>{children}</>;
 };
 
-const getSidenavItems = (config: Config | null): MenuProps["items"] => {
+const getSidenavItems = (
+  config: Config | null,
+  peerStates: PeerState[]
+): MenuProps["items"] => {
   const showModal = useShowModal();
   const navigate = useNavigate();
 
@@ -281,15 +334,17 @@ const getSidenavItems = (config: Config | null): MenuProps["items"] => {
     return;
   }
 
-  const reposById = _.keyBy(config.repos, (r) => r.id);
+  const reposById = keyBy(config.repos, (r) => r.id);
   const configPlans = config.plans || [];
   const configRepos = config.repos || [];
+
+  const menu: MenuProps["items"] = [];
 
   const plans: MenuProps["items"] = [
     {
       key: "add-plan",
       icon: <PlusOutlined />,
-      label: "Add Plan",
+      label: m.app_menu_add_plan(),
       onClick: async () => {
         const { AddPlanModal } = await import("./AddPlanModal");
         showModal(<AddPlanModal template={null} />);
@@ -297,7 +352,7 @@ const getSidenavItems = (config: Config | null): MenuProps["items"] => {
     },
     ...configPlans.map((plan) => {
       const sel = create(OpSelectorSchema, {
-        instanceId: config.instance,
+        originalInstanceKeyid: "",
         planId: plan.id,
         repoGuid: reposById[plan.repo]?.guid,
       });
@@ -336,7 +391,7 @@ const getSidenavItems = (config: Config | null): MenuProps["items"] => {
     {
       key: "add-repo",
       icon: <PlusOutlined />,
-      label: "Add Repo",
+      label: m.app_menu_add_repo(),
       onClick: async () => {
         const { AddRepoModal } = await import("./AddRepoModal");
         showModal(<AddRepoModal template={null} />);
@@ -380,51 +435,112 @@ const getSidenavItems = (config: Config | null): MenuProps["items"] => {
     }),
   ];
 
-  const authorizedClientRepos: MenuProps["items"] = [];
-
+  const authorizedClients: MenuProps["items"] = [];
   if (config.multihost?.authorizedClients?.length) {
-    const authorizedClients = config.multihost.authorizedClients;
+    const authorizedClientsConfigs = new Map<string, Multihost_Peer>();
+    for (const client of config.multihost.authorizedClients) {
+      authorizedClientsConfigs.set(client.keyid, client);
+    }
 
-    // Display authorized client peer statuses
+    const createElementForPeerState = (
+      peerState: PeerState,
+      peerConfig: Multihost_Peer
+    ): Required<MenuProps>["items"][0] => {
+      const repos: MenuProps["items"] = peerState.knownRepos.map(
+        (repo: RepoMetadata) => {
+          const sel = create(OpSelectorSchema, {
+            originalInstanceKeyid: peerState.peerKeyid,
+            repoGuid: repo.guid,
+          });
+
+          return {
+            key: `repo-${peerState.peerKeyid}-${repo.guid}`,
+            icon: <IconForResource selector={sel} />,
+            label: (
+              <div
+                className="backrest visible-on-hover"
+                style={{ width: "100%", height: "100%" }}
+              >
+                {repo.id}
+              </div>
+            ),
+            onClick: async () => {
+              navigate(`/peer/${peerState.peerInstanceId}/repo/${repo.id}`);
+            },
+          };
+        }
+      );
+
+      return {
+        key: `peer-${peerState.peerKeyid}`,
+        icon: (
+          <IconForResource
+            selector={create(OpSelectorSchema, {
+              originalInstanceKeyid: peerState.peerKeyid,
+            })}
+          />
+        ),
+        label: (
+          <div
+            className="backrest visible-on-hover"
+            style={{ width: "100%", height: "100%" }}
+          >
+            {peerState.peerInstanceId}
+          </div>
+        ),
+        children: repos.length > 0 ? repos : undefined,
+      };
+    };
+
+    for (const peerState of peerStates) {
+      const peerConfig = authorizedClientsConfigs.get(peerState.peerKeyid);
+      if (!peerConfig) {
+        continue;
+      }
+      authorizedClients.push(createElementForPeerState(peerState, peerConfig));
+    }
   }
 
-  return [
-    {
-      key: "plans",
-      icon: React.createElement(ScheduleOutlined),
-      label: "Plans",
-      children: plans,
+  menu.push({
+    key: "plans",
+    icon: React.createElement(ScheduleOutlined),
+    label: m.app_menu_plans(),
+    children: plans,
+  });
+  menu.push({
+    key: "repos",
+    icon: React.createElement(DatabaseOutlined),
+    label: m.app_menu_repos(),
+    children: repos,
+  });
+  if (authorizedClients.length > 0) {
+    menu.push({
+      key: "authorized-clients",
+      icon: React.createElement(CloudServerOutlined),
+      label: m.app_menu_remote_instances(),
+      children: authorizedClients,
+    });
+  }
+  menu.push({
+    key: "settings",
+    icon: React.createElement(SettingOutlined),
+    label: m.app_menu_settings(),
+    onClick: async () => {
+      const { SettingsModal } = await import("./SettingsModal");
+      showModal(<SettingsModal />);
     },
-    {
-      key: "repos",
-      icon: React.createElement(DatabaseOutlined),
-      label: "Repositories",
-      children: repos,
-    },
-    {
-      key: "settings",
-      icon: React.createElement(SettingOutlined),
-      label: "Settings",
-      onClick: async () => {
-        const { SettingsModal } = await import("./SettingsModal");
-        showModal(<SettingsModal />);
-      },
-    },
-  ];
+  });
+  return menu;
 };
 
 const IconForResource = ({ selector }: { selector: OpSelector }) => {
   const [status, setStatus] = useState(OperationStatus.STATUS_UNKNOWN);
   useEffect(() => {
-    if (!selector || !selector.instanceId || !selector.repoGuid) {
-      return;
-    }
-
     const load = async () => {
       setStatus(await getStatusForSelector(selector));
     };
     load();
-    const refresh = _.debounce(load, 1000, { maxWait: 10000, trailing: true });
+    const refresh = debounce(load, 1000, { maxWait: 10000, trailing: true });
     const callback = (event?: OperationEvent, err?: Error) => {
       if (!event || !event.event) return;
       switch (event.event.case) {

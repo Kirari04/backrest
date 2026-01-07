@@ -29,12 +29,11 @@ import {
   Multihost_PeerSchema,
   Multihost_Permission_Type,
 } from "../../gen/ts/v1/config_pb";
-import { PeerState } from "../../gen/ts/v1/syncservice_pb";
-import {
-  subscribeToPeerStates,
-  unsubscribeFromPeerStates,
-} from "../state/peerstates";
+import { PeerState } from "../../gen/ts/v1sync/syncservice_pb";
+import { useSyncStates } from "../state/peerstates";
 import { PeerStateConnectionStatusIcon } from "../components/SyncStateIcon";
+import { isMultihostSyncEnabled } from "../state/buildcfg";
+import * as m from "../paraglide/messages";
 
 interface FormData {
   auth: {
@@ -42,6 +41,7 @@ interface FormData {
       name: string;
       passwordBcrypt: string;
       needsBcrypt?: boolean;
+      isExisting?: boolean;
     }[];
   };
   instance: string;
@@ -76,23 +76,13 @@ export const SettingsModal = () => {
   const showModal = useShowModal();
   const alertsApi = useAlertApi()!;
   const [form] = Form.useForm<FormData>();
-  const [peerStates, setPeerStates] = useState<PeerState[]>([]);
+  const peerStates = useSyncStates();
   const [reloadOnCancel, setReloadOnCancel] = useState(false);
   const [formEdited, setFormEdited] = useState(false);
 
   if (!config) {
     return null;
   }
-
-  useEffect(() => {
-    const cb = (syncStates: PeerState[]) => {
-      setPeerStates(syncStates);
-    };
-    subscribeToPeerStates(cb);
-    return () => {
-      unsubscribeFromPeerStates(cb);
-    };
-  }, []);
 
   const handleOk = async () => {
     try {
@@ -108,6 +98,7 @@ export const SettingsModal = () => {
             user.passwordBcrypt = hash.value;
             delete user.needsBcrypt;
           }
+          delete user.isExisting;
         }
       }
 
@@ -129,10 +120,10 @@ export const SettingsModal = () => {
 
       setConfig(await backrestService.setConfig(newConfig));
       setReloadOnCancel(true);
-      alertsApi.success("Settings updated", 5);
+      alertsApi.success(m.settings_success_updated(), 5);
       setFormEdited(false);
     } catch (e: any) {
-      alertsApi.error(formatErrorAlert(e, "Operation error: "), 15);
+      alertsApi.error(formatErrorAlert(e, m.settings_error_operation()), 15);
     }
   };
 
@@ -154,10 +145,10 @@ export const SettingsModal = () => {
         width="60vw"
         footer={[
           <Button key="back" onClick={handleCancel}>
-            {formEdited ? "Cancel" : "Close"}
+            {formEdited ? m.button_cancel() : m.button_close()}
           </Button>,
           <Button key="submit" type="primary" onClick={handleOk}>
-            Save
+            {m.button_save()}
           </Button>,
         ]}
       >
@@ -170,37 +161,34 @@ export const SettingsModal = () => {
         >
           {users.length > 0 || config.auth?.disabled ? null : (
             <>
-              <strong>Initial backrest setup! </strong>
+              <strong>{m.settings_initial_setup_title()}</strong>
               <p>
-                Backrest has detected that you do not have any users configured,
-                please add at least one user to secure the web interface.
+                {m.settings_initial_setup_message()}
               </p>
               <p>
-                You can add more users later or, if you forget your password,
-                reset users by editing the configuration file (typically in
-                $HOME/.backrest/config.json)
+                {m.settings_initial_setup_hint()}
               </p>
             </>
           )}
           <Form.Item
             hasFeedback
             name="instance"
-            label="Instance ID"
+            label={m.settings_field_instance_id()}
             required
             initialValue={config.instance || ""}
-            tooltip="The instance name will be used to identify this backrest install. Pick a value carefully as it cannot be changed later."
+            tooltip={m.settings_field_instance_id_tooltip()}
             rules={[
-              { required: true, message: "Instance ID is required" },
+              { required: true, message: m.settings_validation_instance_id_required() },
               {
                 pattern: namePattern,
                 message:
-                  "Instance ID must be alphanumeric with '_-.' allowed as separators",
+                  m.settings_validation_instance_id_pattern(),
               },
             ]}
           >
             <Input
               placeholder={
-                "Unique instance ID for this instance (e.g. my-backrest-server)"
+                m.settings_field_instance_id_placeholder()
               }
               disabled={!!config.instance}
             />
@@ -210,13 +198,13 @@ export const SettingsModal = () => {
             items={[
               {
                 key: "1",
-                label: "Authentication",
+                label: m.settings_section_authentication(),
                 forceRender: true,
                 children: <AuthenticationForm form={form} config={config} />,
               },
               {
                 key: "2",
-                label: "Multihost Identity and Sharing",
+                label: m.settings_section_multihost(),
                 forceRender: true,
                 children: (
                   <MultihostIdentityForm
@@ -225,12 +213,11 @@ export const SettingsModal = () => {
                     peerStates={peerStates}
                   />
                 ),
-                /* hidden until multihost is stable */
-                style: { display: "none" },
+                style: isMultihostSyncEnabled ? undefined : { display: "none" },
               },
               {
                 key: "last",
-                label: "Preview",
+                label: m.settings_section_preview(),
                 children: (
                   <Form.Item shouldUpdate wrapperCol={{ span: 24 }}>
                     {() => (
@@ -258,7 +245,7 @@ const AuthenticationForm: React.FC<{
   return (
     <>
       <Form.Item
-        label="Disable Authentication"
+        label={m.settings_auth_disable()}
         name={["auth", "disabled"]}
         valuePropName="checked"
         initialValue={config.auth?.disabled || false}
@@ -266,13 +253,14 @@ const AuthenticationForm: React.FC<{
         <Checkbox />
       </Form.Item>
 
-      <Form.Item label="Users" required={true}>
+      <Form.Item label={m.settings_auth_users()} required={true}>
         <Form.List
           name={["auth", "users"]}
           initialValue={
-            config.auth?.users?.map((u) =>
-              toJson(UserSchema, u, { alwaysEmitImplicit: true })
-            ) || []
+            config.auth?.users?.map((u) => ({
+              ...(toJson(UserSchema, u, { alwaysEmitImplicit: true }) as any),
+              isExisting: true,
+            })) || []
           }
         >
           {(fields, { add, remove }) => (
@@ -282,20 +270,42 @@ const AuthenticationForm: React.FC<{
                   <Row key={field.key} gutter={16}>
                     <Col span={11}>
                       <Form.Item
-                        name={[field.name, "name"]}
-                        rules={[
-                          {
-                            required: true,
-                            message: "Name is required",
-                          },
-                          {
-                            pattern: namePattern,
-                            message:
-                              "Name must be alphanumeric with dashes or underscores as separators",
-                          },
-                        ]}
+                        name={[field.name, "isExisting"]}
+                        hidden={true}
+                        initialValue={false}
                       >
-                        <Input placeholder="Username" />
+                        <Input />
+                      </Form.Item>
+                      <Form.Item shouldUpdate noStyle>
+                        {(form) => {
+                          const isExisting = form.getFieldValue([
+                            "auth",
+                            "users",
+                            field.name,
+                            "isExisting",
+                          ]);
+                          return (
+                            <Form.Item
+                              name={[field.name, "name"]}
+                              rules={[
+                                {
+                                  required: true,
+                                  message: m.settings_auth_name_required(),
+                                },
+                                {
+                                  pattern: namePattern,
+                                  message:
+                                    m.settings_auth_name_pattern(),
+                                },
+                              ]}
+                            >
+                              <Input
+                                placeholder={m.settings_auth_username_placeholder()}
+                                disabled={isExisting}
+                              />
+                            </Form.Item>
+                          );
+                        }}
                       </Form.Item>
                     </Col>
                     <Col span={11}>
@@ -304,12 +314,12 @@ const AuthenticationForm: React.FC<{
                         rules={[
                           {
                             required: true,
-                            message: "Password is required",
+                            message: m.settings_auth_password_required(),
                           },
                         ]}
                       >
                         <Input.Password
-                          placeholder="Password"
+                          placeholder={m.settings_auth_password_placeholder()}
                           onFocus={() => {
                             form.setFieldValue(
                               ["auth", "users", index, "needsBcrypt"],
@@ -341,7 +351,7 @@ const AuthenticationForm: React.FC<{
                   }}
                   block
                 >
-                  <PlusOutlined /> Add user
+                  <PlusOutlined /> {m.settings_auth_add_user()}
                 </Button>
               </Form.Item>
             </>
@@ -360,34 +370,30 @@ const MultihostIdentityForm: React.FC<{
   return (
     <>
       <Typography.Paragraph italic>
-        Multihost identity allows you to share repositories between multiple
-        Backrest instances. This is useful for keeping track of the backup
-        status of a collections of systems.
+        {m.settings_multihost_intro()}
       </Typography.Paragraph>
       <Typography.Paragraph italic>
-        This feature is experimental and may be subject to version incompatible
-        changes in the future which will require all instances to be updated at
-        the same time.
+        {m.settings_multihost_warning()}
       </Typography.Paragraph>
 
       {/* Show the current instance's identity */}
       <Form.Item
-        label="Multihost Identity"
+        label={m.settings_multihost_identity()}
         name={["multihost", "identity", "keyId"]}
         initialValue={config.multihost?.identity?.keyid || ""}
         rules={[
           {
             required: true,
-            message: "Multihost identity is required",
+            message: m.settings_multihost_identity_required(),
           },
         ]}
-        tooltip="Multihost identity is used to identify this instance in a multihost setup. It is cryptographically derived from the public key of this instance."
+        tooltip={m.settings_multihost_identity_tooltip()}
         wrapperCol={{ span: 16 }}
       >
         <Row>
           <Col flex="auto">
             <Input
-              placeholder="Unique multihost identity"
+              placeholder={m.settings_multihost_identity_placeholder()}
               disabled
               value={config.multihost?.identity?.keyid}
             />
@@ -401,7 +407,7 @@ const MultihostIdentityForm: React.FC<{
                 )
               }
             >
-              copy
+              {m.button_copy()}
             </Button>
           </Col>
         </Row>
@@ -409,14 +415,14 @@ const MultihostIdentityForm: React.FC<{
 
       {/* Authorized client peers. */}
       <Form.Item
-        label="Authorized Clients"
-        tooltip="Authorized clients are other Backrest instances that are allowed to access repositories on this instance."
+        label={m.settings_multihost_authorized_clients()}
+        tooltip={m.settings_multihost_authorized_clients_tooltip()}
       >
         <PeerFormList
           form={form}
           listName={["multihost", "authorizedClients"]}
           showInstanceUrl={false}
-          itemTypeName="Authorized Client"
+          itemTypeName={m.settings_multihost_authorized_client_item()}
           peerStates={peerStates}
           config={config}
           listType="authorizedClients"
@@ -430,14 +436,14 @@ const MultihostIdentityForm: React.FC<{
 
       {/* Known host peers. */}
       <Form.Item
-        label="Known Hosts"
-        tooltip="Known hosts are other Backrest instances that this instance can connect to."
+        label={m.settings_multihost_known_hosts()}
+        tooltip={m.settings_multihost_known_hosts_tooltip()}
       >
         <PeerFormList
           form={form}
           listName={["multihost", "knownHosts"]}
           showInstanceUrl={true}
-          itemTypeName="Known Host"
+          itemTypeName={m.settings_multihost_known_host_item()}
           peerStates={peerStates}
           config={config}
           listType="knownHosts"
@@ -496,7 +502,7 @@ const PeerFormList: React.FC<{
               block
               icon={<PlusOutlined />}
             >
-              Add {itemTypeName || "Peer"}
+              {m.settings_peer_add_button({ itemTypeName: itemTypeName || m.peer_default_name() })}
             </Button>
             <Form.ErrorList errors={errors} />
           </Form.Item>
@@ -568,34 +574,37 @@ const PeerFormListItem: React.FC<{
         <Col span={10}>
           <Form.Item
             name={[fieldName, "instanceId"]}
-            label="Instance ID"
+            label={m.settings_peer_instance_id()}
             rules={[
-              { required: true, message: "Instance ID is required" },
+              { required: true, message: m.settings_validation_instance_id_required() },
               {
                 pattern: namePattern,
                 message:
-                  "Instance ID must be alphanumeric with '_-.' allowed as separators",
+                  m.settings_validation_instance_id_pattern(),
               },
             ]}
           >
-            <Input placeholder="e.g. my-backup-server" />
+            <Input placeholder={m.settings_peer_instance_id_placeholder()} />
           </Form.Item>
         </Col>
-        <Col span={10}>
+        <Col span={12}>
           <Form.Item
             name={[fieldName, "keyId"]}
-            label="Key ID"
-            rules={[{ required: true, message: "Key ID is required" }]}
+            label={m.settings_peer_key_id()}
+            rules={[{ required: true, message: m.settings_peer_key_id_required() }]}
           >
-            <Input placeholder="Public key identifier" />
+            <Input placeholder={m.settings_peer_key_id_placeholder()} />
           </Form.Item>
         </Col>
-        <Col span={4}>
+        <Col span={0}>
           <Form.Item
             name={[fieldName, "keyIdVerified"]}
             valuePropName="checked"
+            // At the moment, we require clients to explicitly provide keys so there's nothing implicit. Manually checking the box doesn't add much value.
+            // It will be more useful if we automate fetching keyids from known hosts in the future / provide a "connection token" like mechanism for easier setup.
+            hidden={true}
           >
-            <Checkbox>Verified</Checkbox>
+            <Checkbox defaultChecked={true}>{m.settings_peer_verified()}</Checkbox>
           </Form.Item>
         </Col>
       </Row>
@@ -605,27 +614,30 @@ const PeerFormListItem: React.FC<{
           <Col span={24}>
             <Form.Item
               name={[fieldName, "instanceUrl"]}
-              label="Instance URL"
+              label={m.settings_peer_instance_url()}
               rules={[
                 {
                   required: showInstanceUrl,
-                  message: "Instance URL is required for known hosts",
+                  message: m.settings_peer_instance_url_required(),
                 },
-                { type: "url", message: "Please enter a valid URL" },
+                { type: "url", message: m.settings_peer_instance_url_pattern() },
               ]}
             >
-              <Input placeholder="https://example.com:9898" />
+              <Input placeholder={m.settings_peer_instance_url_placeholder()} />
             </Form.Item>
           </Col>
         </Row>
       )}
 
-      <PeerPermissionsTile
-        form={form}
-        fieldName={fieldName}
-        listType={listType}
-        config={config}
-      />
+      {/* No meaningful permissions to grant to clients today, only show permissions UI for known hosts */}
+      {isKnownHost ? (
+        <PeerPermissionsTile
+          form={form}
+          fieldName={fieldName}
+          listType={listType}
+          config={config}
+        />
+      ) : null}
     </div>
   );
 };
@@ -644,7 +656,7 @@ const PeerPermissionsTile: React.FC<{
   return (
     <div>
       <Typography.Text strong style={{ marginBottom: "8px", display: "block" }}>
-        Permissions
+        {m.settings_peer_permissions()}
       </Typography.Text>
 
       <Form.List name={[fieldName, "permissions"]}>
@@ -668,28 +680,28 @@ const PeerPermissionsTile: React.FC<{
                   <Col span={11}>
                     <Form.Item
                       name={[permissionField.name, "type"]}
-                      label="Type"
+                      label={m.settings_peer_permission_type()}
                       rules={[
                         {
                           required: true,
-                          message: "Permission type is required",
+                          message: m.settings_peer_permission_type_required(),
                         },
                       ]}
                     >
-                      <Select placeholder="Select permission type">
+                      <Select placeholder={m.settings_permission_type_placeholder()}>
                         <Select.Option
                           value={
                             Multihost_Permission_Type.PERMISSION_READ_WRITE_CONFIG
                           }
                         >
-                          Edit Repo Configuration
+                          {m.settings_permission_edit_repo()}
                         </Select.Option>
                         <Select.Option
                           value={
                             Multihost_Permission_Type.PERMISSION_READ_OPERATIONS
                           }
                         >
-                          Read Operations
+                          {m.settings_permission_read_ops()}
                         </Select.Option>
                       </Select>
                     </Form.Item>
@@ -697,19 +709,19 @@ const PeerPermissionsTile: React.FC<{
                   <Col span={11}>
                     <Form.Item
                       name={[permissionField.name, "scopes"]}
-                      label="Scopes"
+                      label={m.settings_peer_permission_scopes()}
                       rules={[
                         {
                           required: true,
-                          message: "At least one scope is required",
+                          message: m.settings_peer_permission_scopes_required(),
                         },
                       ]}
                     >
                       <Select
                         mode="multiple"
-                        placeholder="Select repositories or use * for all"
+                        placeholder={m.settings_permission_scope_placeholder()}
                         options={[
-                          { label: "All Repositories (*)", value: "*" },
+                          { label: m.settings_permission_scope_all(), value: "*" },
                           ...repoOptions,
                         ]}
                       />
@@ -740,7 +752,7 @@ const PeerPermissionsTile: React.FC<{
               size="small"
               style={{ width: "100%" }}
             >
-              Add Permission
+              {m.settings_peer_add_permission()}
             </Button>
           </>
         )}
