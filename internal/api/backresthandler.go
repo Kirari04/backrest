@@ -471,7 +471,19 @@ func (s *BackrestHandler) ListSnapshots(ctx context.Context, req *connect.Reques
 
 func (s *BackrestHandler) ListSnapshotFiles(ctx context.Context, req *connect.Request[v1.ListSnapshotFilesRequest]) (*connect.Response[v1.ListSnapshotFilesResponse], error) {
 	query := req.Msg
-	repo, err := s.orchestrator.GetRepoOrchestrator(query.RepoId)
+
+	// Lookup the repo by GUID to handle reimports correctly.
+	cfg, err := s.config.Get()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get config: %w", err)
+	}
+	repoCfg := config.FindRepoByGUID(cfg, query.RepoGuid)
+	if repoCfg == nil {
+		return nil, fmt.Errorf("repo not found: %q", query.RepoGuid)
+	}
+
+	// Get the orchestrator for the repo if its configuration is available.
+	repo, err := s.orchestrator.GetRepoOrchestrator(repoCfg.Id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get repo: %w", err)
 	}
@@ -904,25 +916,32 @@ func (s *BackrestHandler) GetLogs(ctx context.Context, req *connect.Request[v1.L
 
 }
 
-func (s *BackrestHandler) GetDownloadURL(ctx context.Context, req *connect.Request[types.Int64Value]) (*connect.Response[types.StringValue], error) {
-	op, err := s.oplog.Get(req.Msg.Value)
+func (s *BackrestHandler) GetDownloadURL(ctx context.Context, req *connect.Request[v1.GetDownloadURLRequest]) (*connect.Response[types.StringValue], error) {
+	op, err := s.oplog.Get(req.Msg.OpId)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get operation %v: %w", req.Msg.Value, err)
+		return nil, fmt.Errorf("failed to get operation %v: %w", req.Msg.OpId, err)
 	}
 
+	var opType string
 	switch op.Op.(type) {
 	case *v1.Operation_OperationIndexSnapshot:
+		opType = "snapshot"
 	case *v1.Operation_OperationRestore:
+		opType = "restore"
 	default:
-		return nil, fmt.Errorf("operation %v is not a restore or snapshot operation", req.Msg.Value)
+		return nil, fmt.Errorf("operation %v is not a restore or snapshot operation", req.Msg.OpId)
 	}
 
-	signature, err := signInt64(op.Id) // the signature authenticates the download URL. Note that the shared URL will be valid for any downloader.
+	token, err := signDownloadToken(DownloadTokenPayload{
+		OpID:     op.Id,
+		Type:     opType,
+		FilePath: req.Msg.FilePath,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate signature: %w", err)
+		return nil, fmt.Errorf("failed to generate token: %w", err)
 	}
 	return connect.NewResponse(&types.StringValue{
-		Value: fmt.Sprintf("./download/%x-%s/", op.Id, hex.EncodeToString(signature)),
+		Value: fmt.Sprintf("./download/%s/", token),
 	}), nil
 }
 

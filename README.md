@@ -238,7 +238,7 @@ Download the Windows installer for your architecture from the [releases page](ht
 | Variable                  | Description                 | Default                                                                                    |
 | ------------------------- | --------------------------- | ------------------------------------------------------------------------------------------ |
 | `BACKREST_PORT`           | Port to bind to             | 127.0.0.1:9898                                                                             |
-| `BACKREST_CONFIG`         | Path to config file         | `%appdata%\backrest`                                                                       |
+| `BACKREST_CONFIG`         | Path to config file         | `%appdata%\backrest\config.json`                                                           |
 | `BACKREST_DATA`           | Path to the data directory  | `%appdata%\backrest\data`                                                                  |
 | `BACKREST_RESTIC_COMMAND` | Path to restic binary       | Defaults to a Backrest managed version of restic in `C:\Program Files\restic\restic-x.x.x` |
 | `XDG_CACHE_HOME`          | Path to the cache directory |                                                                                            |
@@ -284,3 +284,9 @@ You can also use VSCode with [Dev Containers](https://marketplace.visualstudio.c
 
 > [!NOTE]
 > Provided launch configuration has hot reload for typescript frontend.
+
+## Translations
+
+Translations are stored in [./webui/messages](./webui/messages) and are generated using [inlang](https://inlang.com/). Machine translations can be updated by running `npx @inlang/cli machine translate --project ./project.inlang`. 
+
+Text is translated on a best-effort basis and is not guaranteed to be accurate. If you find any translations that are incorrect, please submit a pull request to fix them. Contributions here are greatly appreciated!
